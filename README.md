@@ -94,3 +94,27 @@ The ceiling is a resource cap, not a diagnosis. When it fires, the run still ret
 **Two timeout layers — and the client one usually bites first.** The ceiling above is the _agy-side_ budget. Your MCP client (Claude Code) has its own, separate _tool-call_ timeout, and if it is shorter, the client gives up first — you'll see `Error: timed out waiting for response`, while the bridge's own ceiling reads `MAXIMUM RUNTIME EXCEEDED` instead. Raising `AGY_MAX_RUNTIME` alone therefore changes nothing: the client still aborts on its own schedule. The work is not lost either way — the agy session persists, so `follow_up` with the returned `session_id` retrieves it — but the real fix is to make the client wait at least as long as the ceiling. The [Install](#install) command sets a per-server `timeout` of 3600000ms (scoped to this server only). If you registered the server without it, re-run the `add-json` command from Install, or set the global env var `MCP_TOOL_TIMEOUT=3600000`. Rule of thumb: **client `timeout` ≥ `AGY_MAX_RUNTIME`**.
 
 **Expected latency.** Most of the perceived "slowness" is cold start: the first call in a session spawns the agy CLI and warms the model. A simple `analyze_files` over 3 files measures around **40–50s cold** (≈46s observed), dropping on subsequent same-session calls. A first call that also hits a quota 429 takes longer while the bridge fails over. So a client timeout below ~60s will intermittently trip on cold starts even for "simple" questions — size it generously.
+
+## Configuration
+
+All optional, via environment variables:
+
+| Variable               | Default                 | Description                                                                                                   |
+| ---------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `AGY_PATH`             | `agy`                   | Path to the agy binary                                                                                        |
+| `AGY_MAX_RUNTIME`      | `3600`                  | Seconds; absolute runtime ceiling. The bridge never kills for inactivity — only cancellation, quota, or this  |
+| `AGY_TIMEOUT`          | `AGY_MAX_RUNTIME`       | Seconds; overrides the ceiling for every tool, passed as `--print-timeout`, enforced with a 15s kill grace    |
+| `AGY_TIMEOUT_<TOOL>`   | `AGY_MAX_RUNTIME`       | Seconds; overrides the ceiling for a single tool, e.g. `AGY_TIMEOUT_DEEP_SEARCH=900`. Wins over `AGY_TIMEOUT` |
+| `AGY_MAX_OUTPUT_CHARS` | `50000`                 | Truncation cap for tool output                                                                                |
+| `AGY_DEFAULT_MODEL`    | Gemini 3.6 Flash (High) | Fallback model when no chain entry is available                                                               |
+| `AGY_SKIP_PERMISSIONS` | `true`                  | Pass `--dangerously-skip-permissions` to agy                                                                  |
+| `AGY_SANDBOX`          | `false`                 | Run agy with `--sandbox`                                                                                      |
+| `AGY_ON_FAILURE`       | `fallback`              | `strict` appends an instruction to failed-tool errors telling the calling agent not to absorb the work itself |
+
+> [!WARNING]
+> **The defaults trade sandboxing for reliability.** `AGY_SKIP_PERMISSIONS` defaults to `true` and
+> `AGY_SANDBOX` to `false`, so every delegated task runs `agy` with `--dangerously-skip-permissions`
+> and no sandbox — the delegated model gets unapproved read, write and execute access inside the
+> `cwd` you pass it. That is what stops agy from blocking forever on an interactive approval prompt
+> in a non-interactive MCP context, but it is a real grant. Set `AGY_SKIP_PERMISSIONS=false` (expect
+> prompts) or `AGY_SANDBOX=true` if you are delegating into a directory you do not fully trust.
