@@ -12,7 +12,7 @@ import { CooldownRegistry, QuotaError } from "./quota.js";
 import { TOOLS, type ToolDef } from "./tools.js";
 
 /** Keep in sync with package.json — test/server.test.ts fails if they drift. */
-export const VERSION = "1.0.0";
+export const VERSION = "1.0.1";
 
 interface ToolResponse {
   [key: string]: unknown;
