@@ -271,5 +271,6 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) — conventional commits, prettier, and 
 
 MIT
 
-<!-- hidden visitor counter -->
-<img src="https://komarev.com/ghpvc/?username=pymodel-claude-agy-mcp&label=&color=blueviolet&style=flat" alt="" width="1" height="1">
+<p align="center">
+  <img src="https://komarev.com/ghpvc/?username=pymodel-claude-agy-mcp&label=Visitors&color=blueviolet&style=for-the-badge" alt="Visitor count">
+</p>
