@@ -40,6 +40,11 @@ export class ModelRegistry {
     return result;
   }
 
+  async resolve(opts: ResolveOptions): Promise<Resolution> {
+    const r = await this.resolveChain(opts);
+    return { model: r.models[0], note: r.note };
+  }
+
   /**
    * Returns every viable model in preference order so callers can fail over
    * (e.g. on quota exhaustion). `[undefined]` means "let agy pick".
