@@ -1,0 +1,31 @@
+name: Bug report
+description: Something in the bridge misbehaves
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Include the tool called, the error, and what you expected.
+    validations: { required: true }
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. claude mcp add-json ...
+        2. Ask Claude to ...
+        3. Error: ...
+    validations: { required: true }
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Bridge version (from `npm ls -g @pymodel/claude-agy-mcp` or your MCP config), plus `agy --version`, `node -v`, and your OS.
+    validations: { required: true }
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant MCP server output. Redact secrets.
+      render: shell

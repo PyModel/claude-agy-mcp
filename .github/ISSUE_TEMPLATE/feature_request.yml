@@ -1,0 +1,20 @@
+name: Feature request
+description: Suggest a tool, model route, or config knob
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What delegation workflow is awkward or impossible today?
+    validations: { required: true }
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should the bridge do instead? Include the tool call or config you imagine.
+    validations: { required: true }
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
