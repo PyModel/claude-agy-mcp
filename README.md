@@ -44,6 +44,7 @@ curl -o CLAUDE.md https://raw.githubusercontent.com/PyModel/claude-agy-mcp/main/
 > going — and raising the agy-side ceiling alone will not help, because the client
 > aborts first. If your client doesn't honor a per-server `timeout`, set the global
 > env var `MCP_TOOL_TIMEOUT=3600000` instead.
+> Details in [Timeouts and cancellation](#timeouts-and-cancellation).
 
 ## Tools
 
@@ -79,3 +80,13 @@ agy never surfaces quota exhaustion in print mode — it silently retries the 42
 4. skips cooled-down models on all subsequent calls until their quota resets.
 
 Failovers are annotated in the response footer (`failover: <model>: quota exhausted (resets in 4h24m)`). Only when every candidate is exhausted does the call fail — in seconds, with reset times listed — instead of hanging.
+
+### Timeouts and cancellation
+
+**The bridge does not kill a run for being slow.** Elapsed time cannot distinguish a healthy long model call from a wedged process, and a wrong "stuck" verdict interrupts an agent mid-edit — leaving half-written files behind. So a run is killed only when something authoritative says so:
+
+1. **the caller cancels** (e.g. pressing Esc in Claude Code) — the agy run dies instead of being orphaned,
+2. **quota is confirmed exhausted** (a 429 in the run's log), which triggers failover, or
+3. **the resource ceiling expires** — `AGY_MAX_RUNTIME`, default 3600s.
+
+The ceiling is a resource cap, not a diagnosis. When it fires, the run still returns everything agy produced so far plus its `session_id`, and says so explicitly: any file changes agy already made are on disk, and `follow_up` resumes from where it stopped. `AGY_TIMEOUT` overrides the ceiling for every tool; `AGY_TIMEOUT_<TOOL_NAME>` overrides it for one (e.g. `AGY_TIMEOUT_DEEP_SEARCH=900`) and wins over the global. The full set is `AGY_TIMEOUT_ANALYZE_FILES`, `AGY_TIMEOUT_DEEP_SEARCH`, `AGY_TIMEOUT_WEB_LOOKUP`, `AGY_TIMEOUT_ADVERSARIAL_REVIEW`, `AGY_TIMEOUT_FOLLOW_UP`, and `AGY_TIMEOUT_DELEGATE`. The kill path escalates SIGTERM → SIGKILL across the whole process group, and fires even if agy's helper processes hold the output pipes open.
