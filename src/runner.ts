@@ -23,6 +23,7 @@ export interface RunRequest {
 export interface RunResult {
   output: string;
   truncated: boolean;
+  sessionId?: string;
   timedOut?: boolean;
 }
 
@@ -281,5 +282,15 @@ export async function runAgy(
   }).finally(() => void deps.removeLog(logPath).catch(() => {}));
 
   const { text, truncated } = truncate(stdout, cfg.maxOutputChars);
-  return { output: text, truncated, ...(timedOut ? { timedOut: true } : {}) };
+
+  let sessionId: string | undefined;
+  try {
+    const map = JSON.parse(await deps.readSessionsFile()) as Record<string, string>;
+    const want = path.resolve(req.cwd);
+    sessionId = map[want] ?? Object.entries(map).find(([k]) => path.resolve(k) === want)?.[1];
+  } catch {
+    sessionId = undefined;
+  }
+
+  return { output: text, truncated, sessionId, ...(timedOut ? { timedOut: true } : {}) };
 }
