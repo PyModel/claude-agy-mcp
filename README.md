@@ -19,6 +19,8 @@
 
 **Claude Code delegates heavy tasks to the Antigravity CLI (`agy`)** — saving Claude's context window and tokens for what matters.
 
+Claude sends a task → the bridge routes it to the best available model via `agy` → only the answer comes back. Large files, deep git searches, and web lookups never touch Claude's context.
+
 </div>
 
 ```
@@ -141,3 +143,24 @@ All optional, via environment variables:
 ### Failure behavior
 
 The bridge always fails loudly: agy errors surface as MCP tool errors with agy's actual stderr, and degraded model routing is annotated in the response footer. By default the calling agent (Claude) will typically do the work itself after a failure — visible in the transcript, but easy to stop noticing in a long session. Set `AGY_ON_FAILURE=strict` to append an explicit "do NOT perform this work yourself — report the failure to the user" instruction to every delegation error, so you keep control over when token savings are silently lost.
+
+## Development
+
+```bash
+npm install
+npm test           # vitest unit tests (exec mocked — no agy needed)
+npm run typecheck
+npm run build      # tsup → dist/index.js
+```
+
+## Contributors
+
+Contributions are welcome — open an issue or PR.
+
+<a href="https://github.com/PyModel/claude-agy-mcp/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=PyModel/claude-agy-mcp" alt="Contributors" />
+</a>
+
+## License
+
+MIT
