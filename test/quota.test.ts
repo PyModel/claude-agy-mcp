@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { parseResetDuration, formatDuration, detectQuota } from "../src/quota.js";
+import {
+  parseResetDuration,
+  formatDuration,
+  detectQuota,
+  QuotaError,
+  CooldownRegistry,
+  DEFAULT_COOLDOWN_SEC,
+} from "../src/quota.js";
 
 const LOG_429 =
   "E0613 00:38:03.030151 56767 log.go:398] agent executor error: RESOURCE_EXHAUSTED (code 429): " +
@@ -43,5 +50,45 @@ describe("detectQuota", () => {
   });
   it("returns null on a clean log", () => {
     expect(detectQuota("I0613 print mode: sending message\nall good")).toBeNull();
+  });
+});
+
+describe("QuotaError", () => {
+  it("carries model and reset info in the message", () => {
+    const e = new QuotaError("Gemini 3.5 Flash (Medium)", {
+      resetText: "4h24m",
+      resetSeconds: 15840,
+    });
+    expect(e.message).toContain("Gemini 3.5 Flash (Medium)");
+    expect(e.message).toContain("4h24m");
+    expect(e.resetSeconds).toBe(15840);
+  });
+});
+
+describe("CooldownRegistry", () => {
+  it("marks a model as cooling until its reset time", () => {
+    let now = 1_000_000;
+    const reg = new CooldownRegistry(() => now);
+    reg.set("ModelA", 60);
+    expect(reg.cooling("ModelA")).toBe(true);
+    expect(reg.cooling("ModelB")).toBe(false);
+    now += 61_000;
+    expect(reg.cooling("ModelA")).toBe(false);
+  });
+
+  it("falls back to a default cooldown when reset time is unknown", () => {
+    let now = 0;
+    const reg = new CooldownRegistry(() => now);
+    reg.set("ModelA", undefined);
+    now = (DEFAULT_COOLDOWN_SEC - 1) * 1000;
+    expect(reg.cooling("ModelA")).toBe(true);
+    now = (DEFAULT_COOLDOWN_SEC + 1) * 1000;
+    expect(reg.cooling("ModelA")).toBe(false);
+  });
+
+  it("describes remaining cooldown", () => {
+    const reg = new CooldownRegistry(() => 0);
+    reg.set("ModelA", 3661);
+    expect(reg.describe("ModelA")).toBe("1h1m1s");
   });
 });
