@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { homedir } from "node:os";
 import path from "node:path";
+import type { Config } from "./config.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -10,6 +11,8 @@ export interface RunRequest {
   cwd: string;
   model?: string;
   conversationId?: string;
+  /** Per-call timeout; falls back to cfg.timeoutSec. */
+  timeoutSec?: number;
 }
 
 export interface RunResult {
@@ -46,3 +49,16 @@ export const execWithClosedStdin: ExecFn = (file, args, options) => {
   promise.child.stdin?.end();
   return promise;
 };
+
+export function buildArgs(req: RunRequest, cfg: Config, logPath: string): string[] {
+  const timeoutSec = req.timeoutSec ?? cfg.timeoutSec;
+  const args: string[] = [];
+  if (cfg.skipPermissions) args.push("--dangerously-skip-permissions");
+  if (cfg.sandbox) args.push("--sandbox");
+  args.push("--add-dir", req.cwd);
+  args.push("--log-file", logPath);
+  if (req.conversationId) args.push("--conversation", req.conversationId);
+  if (req.model) args.push("--model", req.model);
+  args.push("--print-timeout", `${timeoutSec}s`, "-p", req.prompt);
+  return args;
+}
