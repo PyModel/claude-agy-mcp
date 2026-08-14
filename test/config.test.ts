@@ -53,4 +53,22 @@ describe("loadConfig", () => {
   it("falls back to the default max runtime for zero", () => {
     expect(loadConfig({ AGY_MAX_RUNTIME: "0" }).maxRuntimeSec).toBe(3600);
   });
+
+  it("parses per-tool AGY_TIMEOUT_<TOOL> overrides", () => {
+    const c = loadConfig({ AGY_TIMEOUT_DEEP_SEARCH: "300", AGY_TIMEOUT_DELEGATE: "900" });
+    expect(c.perToolTimeouts).toEqual({ deep_search: 300, delegate: 900 });
+  });
+
+  it("ignores non-positive per-tool timeout values", () => {
+    const c = loadConfig({ AGY_TIMEOUT_DEEP_SEARCH: "abc", AGY_TIMEOUT_DELEGATE: "-5" });
+    expect(c.perToolTimeouts).toEqual({});
+  });
+
+  it("reads AGY_ON_FAILURE=strict", () => {
+    expect(loadConfig({ AGY_ON_FAILURE: "strict" }).onFailure).toBe("strict");
+  });
+
+  it("treats unknown AGY_ON_FAILURE values as fallback", () => {
+    expect(loadConfig({ AGY_ON_FAILURE: "explode" }).onFailure).toBe("fallback");
+  });
 });
