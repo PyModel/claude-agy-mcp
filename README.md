@@ -1,6 +1,10 @@
-# claude-agy-mcp
+<div align="center">
+
+<img src="https://raw.githubusercontent.com/PyModel/claude-agy-mcp/main/assets/banner.svg" alt="claude-agy-mcp — Claude Code delegates heavy tasks to the Antigravity CLI" width="100%">
 
 **Claude Code delegates heavy tasks to the Antigravity CLI (`agy`)** — saving Claude's context window and tokens for what matters.
+
+</div>
 
 ```
 User → Claude Code → claude-agy-mcp (MCP) → agy CLI → Gemini / Claude / GPT-OSS
