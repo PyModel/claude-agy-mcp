@@ -68,3 +68,14 @@ Every response ends with a footer:
 ### Model routing
 
 On first use the bridge runs `agy models` (cached for the process lifetime) and picks the first available model in the tool's preference chain. If none is available it falls back to `AGY_DEFAULT_MODEL`, and finally to agy's own default. agy silently ignores unknown `--model` values, so the bridge validates names up front instead of letting requests land on the wrong model.
+
+### Quota-aware failover
+
+agy never surfaces quota exhaustion in print mode — it silently retries the 429 until its print-timeout, then exits 0 with empty output, which used to look like an indefinite hang. The bridge now watches each run's log file (via `--log-file`) and on `RESOURCE_EXHAUSTED (code 429)`:
+
+1. kills the agy process group immediately (no waiting out the timeout),
+2. parses the reset time ("Resets in 4h24m") into an in-process cooldown registry,
+3. retries the same prompt on the next model in the tool's chain,
+4. skips cooled-down models on all subsequent calls until their quota resets.
+
+Failovers are annotated in the response footer (`failover: <model>: quota exhausted (resets in 4h24m)`). Only when every candidate is exhausted does the call fail — in seconds, with reset times listed — instead of hanging.
