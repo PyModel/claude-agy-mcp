@@ -42,7 +42,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     perToolTimeouts: loadPerToolTimeouts(env),
     maxRuntimeSec: positiveInt(env.AGY_MAX_RUNTIME, 3600),
     maxOutputChars: positiveInt(env.AGY_MAX_OUTPUT_CHARS, 50_000),
-    defaultModel: env.AGY_DEFAULT_MODEL || "Gemini 3.6 Flash (High)",
+    defaultModel: env.AGY_DEFAULT_MODEL || "Gemini 3.7 Flash (High)",
     skipPermissions: env.AGY_SKIP_PERMISSIONS !== "false",
     sandbox: env.AGY_SANDBOX === "true",
     onFailure: env.AGY_ON_FAILURE === "strict" ? "strict" : "fallback",

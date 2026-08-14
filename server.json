@@ -6,12 +6,12 @@
     "url": "https://github.com/PyModel/claude-agy-mcp",
     "source": "github"
   },
-  "version": "1.0.3",
+  "version": "2.0.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@pymodel/claude-agy-mcp",
-      "version": "1.0.3",
+      "version": "2.0.0",
       "transport": {
         "type": "stdio"
       },
@@ -45,7 +45,7 @@
           "name": "AGY_MAX_OUTPUT_CHARS"
         },
         {
-          "description": "Fallback model when no chain entry is available (defaults to Gemini 3.6 Flash (High))",
+          "description": "Fallback model when no chain entry is available (defaults to Gemini 3.7 Flash (High))",
           "isRequired": false,
           "format": "string",
           "isSecret": false,

@@ -12,28 +12,115 @@
 
 <p>
   <a href="#install"><b>Install</b></a> ·
+  <a href="#why-gemini-37-flash-high-for-claude-code"><b>Why Gemini 3.7 Flash?</b></a> ·
+  <a href="#the-ultimate-ai-engineering-mcp-stack"><b>MCP Power Stack</b></a> ·
   <a href="#tools"><b>Tools</b></a> ·
   <a href="#timeouts-and-cancellation"><b>Timeouts</b></a> ·
   <a href="#configuration"><b>Configuration</b></a>
 </p>
 
-**Claude Code delegates heavy tasks to the Antigravity CLI (`agy`)** — saving Claude's context window and tokens for what matters.
+**Claude Code delegates heavy tasks to Google's flagship Gemini 3.7 Flash (High)** via the Antigravity CLI (`agy`) — saving Claude's context window and tokens for what matters.
 
-Claude sends a task → the bridge routes it to the best available model via `agy` → only the answer comes back. Large files, deep git searches, and web lookups never touch Claude's context.
+Claude acts as the orchestrator → `claude-agy-mcp` routes compute-heavy sub-tasks to **Gemini 3.7 Flash (High)** → only concise answers return. Large files, deep git searches, and log dumps never pollute Claude's context.
 
 </div>
 
 ```
-User → Claude Code → claude-agy-mcp (MCP) → agy CLI → Gemini / Claude / GPT-OSS
-                   ←                      ←         ←
+User → Claude Code → claude-agy-mcp (MCP) → agy CLI → Gemini 3.7 Flash / Pro / Claude
+                   ←                      ←         ← (Clean answers only)
 ```
+
+## Why Gemini 3.7 Flash (High) for Claude Code?
+
+<div align="center">
+  <img src="https://raw.githubusercontent.com/PyModel/claude-agy-mcp/main/assets/benchmarks.svg" alt="Gemini 3.7 Flash Benchmarks" width="100%">
+</div>
+
+**Gemini 3.7 Flash** is Google's most intelligent workhorse model for coding and agentic execution. It applies deep multi-step planning, rigorous terminal reasoning, and high first-pass code accuracy.
+
+### Benchmark Highlights
+
+| Benchmark / Capability | Gemini 3.7 Flash (High) | Prior Generation (3.6 Flash) | Advantage                                                                                 |
+| ---------------------- | ----------------------- | ---------------------------- | ----------------------------------------------------------------------------------------- |
+| **DeepSWE v1.1**       | **65.3%**               | 49.0%                        | **+16.3%** jump in long-horizon repository software engineering                           |
+| **FrontierCode 1.1**   | **43.6%**               | 34.4%                        | **+9.2%** improvement in production code quality and first-pass accuracy                  |
+| **Terminal-Bench 2.1** | **85.8%**               | 78.0%                        | **+7.8%** higher resilience in agentic CLI execution & tool chaining                      |
+| **WebDev Arena**       | **1588 Elo**            | 1538 Elo                     | **#1 Rank** for fullstack web application and UI design adherence                         |
+| **AutomationBench**    | **30.4%**               | 17.0%                        | Surpasses GPT-5.6 Terra (23.6%) and Claude Sonnet 5 (10.7%) in enterprise agent workflows |
+| **Context & Window**   | **1,000,000 Tokens**    | 1,000,000 Tokens             | 64K output tokens with 97.0% retrieval on GDM-MRCR v2 (128k)                              |
+| **Token Economics**    | **$0.75 / $3.75** (1M)  | $1.50 / $7.50                | Up to **10x–20x cheaper** than Claude Opus/Sonnet for background delegation               |
+
+### The Token & Context Multiplier
+
+When Claude Code directly analyzes a 4,000-line database dump or greps 20 files across git history, those thousands of lines stay permanently in Claude's prompt context, inflating cost and pushing you toward compaction.
+
+With `claude-agy-mcp`:
+
+1. Claude calls `analyze_files` or `deep_search`.
+2. Gemini 3.7 Flash processes the 100k+ tokens in isolation via `agy`.
+3. Only the exact code-level findings and line citations return into Claude's prompt.
+4. Subsequent questions reuse the same agy session with `follow_up` without re-sending any files.
+
+---
+
+## The Ultimate AI Engineering MCP Stack
+
+`claude-agy-mcp` is designed to anchor a modern AI engineer's MCP toolkit alongside complementary specialized servers:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                             Claude Code (Agent)                             │
+└──────┬──────────────────────┬───────────────────────┬───────────────────────┘
+       │                      │                       │                       │
+       ▼                      ▼                       ▼                       ▼
+┌──────────────┐      ┌──────────────┐        ┌──────────────┐        ┌──────────────┐
+│claude-agy-mcp│      │   context7   │        │  firecrawl   │        │    tavily    │
+│  (Gemini 3.7 │      │(Official Docs│        │(Web Scraping │        │(Live Search  │
+│  Delegation) │      │  & API Specs)│        │  & Crawling) │        │ & Research)  │
+└──────────────┘      └──────────────┘        └──────────────┘        └──────────────┘
+```
+
+| MCP Server           | Primary Superpower                    | When Claude Uses It                                                                                                                                            |
+| -------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`claude-agy-mcp`** | **Heavy Compute & Coding Delegation** | Analyzing files >200 lines, repo archaeology (`git log/diff/blame`), adversarial code reviews, and raw execution via Gemini 3.7 Flash.                         |
+| **`context7`**       | **Up-to-date Official Documentation** | Fetching latest version-accurate API signatures and documentation for libraries (Next.js, React, Tailwind, Prisma, Vite, etc.) to eliminate hallucinated APIs. |
+| **`firecrawl`**      | **Clean Web Scraping & Crawling**     | Converting dynamic web pages, documentation sites, and GitHub repos into clean, LLM-ready markdown or structured JSON.                                         |
+| **`tavily`**         | **Fast Live Search & Grounding**      | Low-latency web search, current news, error message lookups, and technical research.                                                                           |
+
+### Recommended MCP Configuration (`.agents/mcp_config.json` or Claude Code)
+
+```json
+{
+  "mcpServers": {
+    "claude-agy-mcp": {
+      "command": "npx",
+      "args": ["-y", "@pymodel/claude-agy-mcp"],
+      "timeout": 3600000
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp@latest"]
+    },
+    "firecrawl": {
+      "command": "npx",
+      "args": ["-y", "firecrawl-mcp"]
+    },
+    "tavily": {
+      "command": "npx",
+      "args": ["-y", "tavily-mcp"]
+    }
+  }
+}
+```
+
+---
 
 ## Why this over claude-to-agy?
 
 |                 | claude-to-agy               | **claude-agy-mcp**                                                                   |
 | --------------- | --------------------------- | ------------------------------------------------------------------------------------ |
 | Tool surface    | 1 generic `delegate_to_agy` | 6 purpose-built tools — Claude self-routes reliably                                  |
-| Model selection | none (agy default only)     | per-tool routing across all `agy models`, with availability detection and fallback   |
+| Model selection | none (agy default only)     | per-tool routing prioritizing **Gemini 3.7 Flash (High)** with quota failover        |
 | Multi-turn      | stateless                   | session continuity — `follow_up` resumes agy conversations without resending context |
 | Output safety   | unbounded                   | configurable truncation cap protects Claude's context                                |
 | Sandbox         | no                          | optional `--sandbox` mode                                                            |
@@ -71,12 +158,12 @@ curl -o CLAUDE.md https://raw.githubusercontent.com/PyModel/claude-agy-mcp/main/
 
 | Tool                 | Use for                                                         | Model routing (first available)                                                                        |
 | -------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `analyze_files`      | Files >200 lines, >3 files at once, logs, dumps, generated code | Gemini 3.6 Flash (High) → Gemini 3.5 Flash (High) → Gemini 3.1 Pro (Low)                               |
-| `deep_search`        | git log/diff/blame archaeology, repo-wide greps                 | Gemini 3.6 Flash (Medium) → Gemini 3.6 Flash (High) → Gemini 3.5 Flash (High)                          |
-| `web_lookup`         | Docs, API references, external/current knowledge                | Gemini 3.6 Flash (Medium) → Gemini 3.6 Flash (High) → Gemini 3.5 Flash (High)                          |
-| `adversarial_review` | Plan critiques, design and code reviews                         | Gemini 3.1 Pro (High) → Claude Opus 4.6 (Thinking) → Gemini 3.6 Flash (High) → Gemini 3.5 Flash (High) |
+| `analyze_files`      | Files >200 lines, >3 files at once, logs, dumps, generated code | Gemini 3.7 Flash (High) → Gemini 3.5 Flash (High) → Gemini 3.1 Pro (Low)                               |
+| `deep_search`        | git log/diff/blame archaeology, repo-wide greps                 | Gemini 3.7 Flash (Medium) → Gemini 3.7 Flash (High) → Gemini 3.5 Flash (High)                          |
+| `web_lookup`         | Docs, API references, external/current knowledge                | Gemini 3.7 Flash (Medium) → Gemini 3.7 Flash (High) → Gemini 3.5 Flash (High)                          |
+| `adversarial_review` | Plan critiques, design and code reviews                         | Gemini 3.1 Pro (High) → Claude Opus 4.6 (Thinking) → Gemini 3.7 Flash (High) → Gemini 3.5 Flash (High) |
 | `follow_up`          | Continue a prior session by `session_id` — no context resend    | inherits the session                                                                                   |
-| `delegate`           | Anything else heavy                                             | Gemini 3.6 Flash (High) → Gemini 3.5 Flash (High)                                                      |
+| `delegate`           | Anything else heavy                                             | Gemini 3.7 Flash (High) → Gemini 3.5 Flash (High)                                                      |
 
 All tools accept optional `cwd` (project root) and `model` (exact name from `agy models`; validated, with available models listed on mismatch).
 
@@ -84,12 +171,12 @@ Every response ends with a footer:
 
 ```
 ---
-[claude-agy-mcp] model: Gemini 3.6 Flash (High) | session: 1f0c…-d4 (use follow_up to continue)
+[claude-agy-mcp] model: Gemini 3.7 Flash (High) | session: 1f0c…-d4 (use follow_up to continue)
 ```
 
 ### Model routing
 
-On first use the bridge runs `agy models` (cached for the process lifetime) and picks the first available model in the tool's preference chain. If none is available it falls back to `AGY_DEFAULT_MODEL`, and finally to agy's own default. agy silently ignores unknown `--model` values, so the bridge validates names up front instead of letting requests land on the wrong model.
+On first use the bridge runs `agy models` (cached for the process lifetime) and picks the first available model in the tool's preference chain (defaulting to **Gemini 3.7 Flash (High)**). If none is available it falls back to `AGY_DEFAULT_MODEL`, and finally to agy's own default. agy silently ignores unknown `--model` values, so the bridge validates names up front instead of letting requests land on the wrong model.
 
 ### Quota-aware failover
 
@@ -127,7 +214,7 @@ All optional, via environment variables:
 | `AGY_TIMEOUT`          | `AGY_MAX_RUNTIME`       | Seconds; overrides the ceiling for every tool, passed as `--print-timeout`, enforced with a 15s kill grace    |
 | `AGY_TIMEOUT_<TOOL>`   | `AGY_MAX_RUNTIME`       | Seconds; overrides the ceiling for a single tool, e.g. `AGY_TIMEOUT_DEEP_SEARCH=900`. Wins over `AGY_TIMEOUT` |
 | `AGY_MAX_OUTPUT_CHARS` | `50000`                 | Truncation cap for tool output                                                                                |
-| `AGY_DEFAULT_MODEL`    | Gemini 3.6 Flash (High) | Fallback model when no chain entry is available                                                               |
+| `AGY_DEFAULT_MODEL`    | Gemini 3.7 Flash (High) | Fallback model when no chain entry is available                                                               |
 | `AGY_SKIP_PERMISSIONS` | `true`                  | Pass `--dangerously-skip-permissions` to agy                                                                  |
 | `AGY_SANDBOX`          | `false`                 | Run agy with `--sandbox`                                                                                      |
 | `AGY_ON_FAILURE`       | `fallback`              | `strict` appends an instruction to failed-tool errors telling the calling agent not to absorb the work itself |

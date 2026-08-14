@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { parseModels, ModelRegistry } from "../src/models.js";
 
 const LISTING = `Gemini 3.5 Flash (Medium)
-Gemini 3.6 Flash (High)
+Gemini 3.7 Flash (High)
 Gemini 3.5 Flash (High)
 Gemini 3.1 Pro (High)
 `;
@@ -11,7 +11,7 @@ describe("parseModels", () => {
   it("returns one trimmed model per non-empty line", () => {
     expect(parseModels(LISTING)).toEqual([
       "Gemini 3.5 Flash (Medium)",
-      "Gemini 3.6 Flash (High)",
+      "Gemini 3.7 Flash (High)",
       "Gemini 3.5 Flash (High)",
       "Gemini 3.1 Pro (High)",
     ]);
@@ -19,11 +19,11 @@ describe("parseModels", () => {
 
   it("returns both the id and the display name from tab-separated listings", () => {
     const raw =
-      "gemini-3.6-flash-high\tGemini 3.6 Flash (High)\n" +
+      "gemini-3.7-flash-high\tGemini 3.7 Flash (High)\n" +
       "gemini-3.1-pro-low\tGemini 3.1 Pro (Low)\n";
     expect(parseModels(raw)).toEqual([
-      "gemini-3.6-flash-high",
-      "Gemini 3.6 Flash (High)",
+      "gemini-3.7-flash-high",
+      "Gemini 3.7 Flash (High)",
       "gemini-3.1-pro-low",
       "Gemini 3.1 Pro (Low)",
     ]);
@@ -56,9 +56,9 @@ describe("ModelRegistry.resolve", () => {
 
   it("picks first available model in chain", async () => {
     const r = await registry(LISTING).resolve({
-      chain: ["Gemini 9.9 Ultra", "Gemini 3.6 Flash (High)"],
+      chain: ["Gemini 9.9 Ultra", "Gemini 3.7 Flash (High)"],
     });
-    expect(r.model).toBe("Gemini 3.6 Flash (High)");
+    expect(r.model).toBe("Gemini 3.7 Flash (High)");
   });
 
   it("falls back to defaultModel when chain misses", async () => {
@@ -78,7 +78,7 @@ describe("ModelRegistry.resolve", () => {
     const reg = registry(new Error("boom"));
     const a = await reg.resolve({ explicit: "Whatever", chain: [] });
     expect(a.model).toBe("Whatever");
-    const b = await reg.resolve({ chain: ["Gemini 3.6 Flash (High)"] });
+    const b = await reg.resolve({ chain: ["Gemini 3.7 Flash (High)"] });
     expect(b.model).toBeUndefined();
     expect(b.note).toMatch(/could not list/i);
   });
@@ -120,11 +120,11 @@ describe("ModelRegistry.resolve", () => {
       return LISTING;
     });
     const [a, b] = await Promise.all([
-      reg.resolveChain({ chain: ["Gemini 3.6 Flash (High)"] }),
+      reg.resolveChain({ chain: ["Gemini 3.7 Flash (High)"] }),
       reg.resolveChain({ chain: ["Gemini 3.1 Pro (High)"] }),
     ]);
     expect(calls).toBe(1);
-    expect(a.models).toEqual(["Gemini 3.6 Flash (High)"]);
+    expect(a.models).toEqual(["Gemini 3.7 Flash (High)"]);
     expect(b.models).toEqual(["Gemini 3.1 Pro (High)"]);
   });
 
@@ -146,7 +146,7 @@ describe("ModelRegistry.resolve", () => {
       calls++;
       return LISTING;
     });
-    await reg.resolve({ chain: ["Gemini 3.6 Flash (High)"] });
+    await reg.resolve({ chain: ["Gemini 3.7 Flash (High)"] });
     await reg.resolve({ chain: ["Gemini 3.1 Pro (High)"] });
     expect(calls).toBe(1);
   });
