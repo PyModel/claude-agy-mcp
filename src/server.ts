@@ -1,13 +1,15 @@
-import type { Config } from "./config.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { loadConfig, type Config } from "./config.js";
 import { ModelRegistry } from "./models.js";
 import {
   runAgy,
   defaultDeps,
+  execWithClosedStdin,
   type RunnerDeps,
   type RunResult,
 } from "./runner.js";
 import { CooldownRegistry, QuotaError } from "./quota.js";
-import type { ToolDef } from "./tools.js";
+import { TOOLS, type ToolDef } from "./tools.js";
 
 interface ToolResponse {
   [key: string]: unknown;
@@ -108,4 +110,27 @@ export function createToolHandler(
       };
     }
   };
+}
+
+export function createServer(): McpServer {
+  const cfg = loadConfig();
+  const registry = new ModelRegistry(async () => {
+    const { stdout } = await execWithClosedStdin(cfg.agyPath, ["models"], {
+      cwd: process.cwd(),
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    });
+    return stdout;
+  });
+  const cooldowns = new CooldownRegistry();
+
+  const server = new McpServer({ name: "claude-agy-mcp", version: "0.4.0" });
+  for (const tool of TOOLS) {
+    server.registerTool(
+      tool.name,
+      { description: tool.description, inputSchema: tool.schema },
+      createToolHandler(tool, cfg, registry, defaultDeps, cooldowns),
+    );
+  }
+  return server;
 }
