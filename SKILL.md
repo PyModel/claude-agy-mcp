@@ -16,3 +16,7 @@ Use the claude-agy-mcp MCP tools instead of doing heavy work yourself:
 | Plan critique, code review                   | `adversarial_review`                      |
 | Follow-up on a prior delegation              | `follow_up` (use the returned session id) |
 | Anything else heavy                          | `delegate`                                |
+
+Every response ends with `[claude-agy-mcp] model: … | session: …`. Reuse the
+session id with `follow_up` for iterative work — the context stays on agy's
+side. Pass `cwd` as the project root so agy can read files and run git.
