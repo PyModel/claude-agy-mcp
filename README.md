@@ -44,3 +44,23 @@ curl -o CLAUDE.md https://raw.githubusercontent.com/PyModel/claude-agy-mcp/main/
 > going — and raising the agy-side ceiling alone will not help, because the client
 > aborts first. If your client doesn't honor a per-server `timeout`, set the global
 > env var `MCP_TOOL_TIMEOUT=3600000` instead.
+
+## Tools
+
+| Tool                 | Use for                                                         | Model routing (first available)                                                                        |
+| -------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `analyze_files`      | Files >200 lines, >3 files at once, logs, dumps, generated code | Gemini 3.6 Flash (High) → Gemini 3.5 Flash (High) → Gemini 3.1 Pro (Low)                               |
+| `deep_search`        | git log/diff/blame archaeology, repo-wide greps                 | Gemini 3.6 Flash (Medium) → Gemini 3.6 Flash (High) → Gemini 3.5 Flash (High)                          |
+| `web_lookup`         | Docs, API references, external/current knowledge                | Gemini 3.6 Flash (Medium) → Gemini 3.6 Flash (High) → Gemini 3.5 Flash (High)                          |
+| `adversarial_review` | Plan critiques, design and code reviews                         | Gemini 3.1 Pro (High) → Claude Opus 4.6 (Thinking) → Gemini 3.6 Flash (High) → Gemini 3.5 Flash (High) |
+| `follow_up`          | Continue a prior session by `session_id` — no context resend    | inherits the session                                                                                   |
+| `delegate`           | Anything else heavy                                             | Gemini 3.6 Flash (High) → Gemini 3.5 Flash (High)                                                      |
+
+All tools accept optional `cwd` (project root) and `model` (exact name from `agy models`; validated, with available models listed on mismatch).
+
+Every response ends with a footer:
+
+```
+---
+[claude-agy-mcp] model: Gemini 3.6 Flash (High) | session: 1f0c…-d4 (use follow_up to continue)
+```
