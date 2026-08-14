@@ -7,6 +7,7 @@ import {
   type ChildHandle,
   type RunnerDeps,
 } from "../src/runner.js";
+import { QuotaError } from "../src/quota.js";
 import type { Config } from "../src/config.js";
 
 const cfg: Config = {
@@ -22,23 +23,42 @@ const cfg: Config = {
   onFailure: "fallback",
 };
 
+const LOG_429 =
+  "E0613 log.go:398] agent executor error: RESOURCE_EXHAUSTED (code 429): " +
+  "Individual quota reached. Resets in 4h24m.";
+
 interface FakeOpts {
   stdout?: string;
+  stderr?: string;
+  exitCode?: number | null;
+  spawnError?: NodeJS.ErrnoException;
+  neverExit?: boolean;
+  log?: string;
 }
 
 function fakeDeps(opts: FakeOpts = {}) {
+  const kills: string[] = [];
   const removed: string[] = [];
+  let capturedArgs: string[] | undefined;
 
   const child: ChildHandle = {
     stdout: () => opts.stdout ?? "",
-    stderr: () => "",
-    wait: () => Promise.resolve({ code: 0 }),
-    kill: () => {},
+    stderr: () => opts.stderr ?? "",
+    wait: () =>
+      opts.neverExit
+        ? new Promise(() => {})
+        : Promise.resolve({ code: opts.exitCode ?? 0, error: opts.spawnError }),
+    kill: (sig) => {
+      kills.push(sig);
+    },
   };
 
   const deps: RunnerDeps = {
-    spawnChild: () => child,
-    readLog: async () => "",
+    spawnChild: (_file, args) => {
+      capturedArgs = args;
+      return child;
+    },
+    readLog: async () => opts.log ?? "",
     removeLog: async (p) => {
       removed.push(p);
     },
@@ -49,7 +69,7 @@ function fakeDeps(opts: FakeOpts = {}) {
     killGraceMs: 5,
   };
 
-  return { deps, removed };
+  return { deps, kills, removed, args: () => capturedArgs };
 }
 
 describe("buildArgs", () => {
@@ -143,5 +163,81 @@ describe("runAgy", () => {
     };
     const r = await runAgy({ prompt: "q", cwd: "/repo" }, cfg, f.deps);
     expect(r.sessionId).toBeUndefined();
+  });
+
+  it("kills the child and throws QuotaError when the log shows a 429", async () => {
+    const f = fakeDeps({ neverExit: true, log: LOG_429 });
+    await expect(
+      runAgy({ prompt: "q", cwd: "/repo", model: "Gemini 3.5 Flash (Medium)" }, cfg, f.deps),
+    ).rejects.toThrow(QuotaError);
+    expect(f.kills).toContain("SIGTERM");
+  });
+
+  it("includes the reset time in the QuotaError", async () => {
+    const f = fakeDeps({ neverExit: true, log: LOG_429 });
+    const err = (await runAgy({ prompt: "q", cwd: "/repo", model: "M" }, cfg, f.deps).catch(
+      (e) => e,
+    )) as QuotaError;
+    expect(err).toBeInstanceOf(QuotaError);
+    expect(err.resetSeconds).toBe(4 * 3600 + 24 * 60);
+  });
+
+  it("resolves partial output and session id when the hard deadline hits", async () => {
+    const f = fakeDeps({ neverExit: true, stdout: "partial answer\n" });
+    const r = await runAgy({ prompt: "q", cwd: "/repo", timeoutSec: 0.05 }, cfg, f.deps);
+    expect(r.output).toBe("partial answer");
+    expect(r.timedOut).toBe(true);
+    expect(r.sessionId).toBe("sess-42");
+    expect(f.kills).toContain("SIGTERM");
+  });
+
+  it("escalates to SIGKILL when the child survives SIGTERM", async () => {
+    const f = fakeDeps({ neverExit: true });
+    const r = await runAgy({ prompt: "q", cwd: "/repo", timeoutSec: 0.05 }, cfg, f.deps);
+    expect(r.timedOut).toBe(true);
+    await new Promise((r) => setTimeout(r, 25)); // killGraceMs is 5 in fakes
+    expect(f.kills).toContain("SIGKILL");
+  });
+
+  it("kills the child and rejects when the abort signal fires", async () => {
+    const f = fakeDeps({ neverExit: true });
+    const ac = new AbortController();
+    const p = runAgy({ prompt: "q", cwd: "/repo", signal: ac.signal }, cfg, f.deps);
+    setTimeout(() => ac.abort(), 10);
+    await expect(p).rejects.toThrow(/cancelled/i);
+    expect(f.kills.length).toBeGreaterThan(0);
+  });
+
+  it("treats empty output with a quota log as QuotaError, not success", async () => {
+    const f = fakeDeps({ stdout: "", exitCode: 0, log: "early\n" });
+    // quota line appears only when checked after exit
+    let calls = 0;
+    f.deps.readLog = async () => (++calls > 0 ? LOG_429 : "");
+    await expect(runAgy({ prompt: "q", cwd: "/repo", model: "M" }, cfg, f.deps)).rejects.toThrow(
+      QuotaError,
+    );
+  });
+
+  it("treats empty output with a clean log as an error, not success", async () => {
+    const f = fakeDeps({ stdout: "", exitCode: 0 });
+    await expect(runAgy({ prompt: "q", cwd: "/repo" }, cfg, f.deps)).rejects.toThrow(
+      /empty output/i,
+    );
+  });
+
+  it("throws install guidance on ENOENT", async () => {
+    const e = new Error("spawn agy ENOENT") as NodeJS.ErrnoException;
+    e.code = "ENOENT";
+    const f = fakeDeps({ spawnError: e, exitCode: null });
+    await expect(runAgy({ prompt: "q", cwd: "/repo" }, cfg, f.deps)).rejects.toThrow(
+      /not found.*antigravity/is,
+    );
+  });
+
+  it("surfaces stderr on non-zero exit", async () => {
+    const f = fakeDeps({ exitCode: 1, stderr: "auth expired" });
+    await expect(runAgy({ prompt: "q", cwd: "/repo" }, cfg, f.deps)).rejects.toThrow(
+      /auth expired/,
+    );
   });
 });
