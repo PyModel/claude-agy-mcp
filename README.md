@@ -17,3 +17,9 @@ User → Claude Code → claude-agy-mcp (MCP) → agy CLI → Gemini / Claude / 
 | Output safety   | unbounded                   | configurable truncation cap protects Claude's context                                |
 | Sandbox         | no                          | optional `--sandbox` mode                                                            |
 | Install         | uvx (Python)                | npx (Node) — zero install                                                            |
+
+## Requirements
+
+- Node.js 18+
+- [Antigravity CLI](https://antigravity.google/docs/cli-getting-started) (`agy`) installed and authenticated
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
