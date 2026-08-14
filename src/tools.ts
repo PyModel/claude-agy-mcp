@@ -94,4 +94,48 @@ export const TOOLS: ToolDef[] = [
       return `Look up on the web: ${args.query}\n\nInclude source URLs for key claims. ${OUTPUT_RULES}`;
     },
   },
+  {
+    name: "adversarial_review",
+    description:
+      "Get an adversarial second opinion from a different model family (Gemini Pro). " +
+      "ALWAYS use this for plan critiques, design reviews, and pre-merge code review: " +
+      "it hunts for flaws, edge cases, security issues, and unstated assumptions you may have missed.",
+    schema: {
+      content: z
+        .string()
+        .optional()
+        .describe("Inline content to review (plan, diff, code snippet)."),
+      files: z
+        .array(z.string())
+        .optional()
+        .describe("File paths to review instead of inline content."),
+      focus: z.string().optional().describe("Optional focus area, e.g. 'security', 'concurrency'."),
+      ...commonShape,
+    },
+    chain: [
+      "Gemini 3.1 Pro (High)",
+      "Claude Opus 4.6 (Thinking)",
+      "Gemini 3.6 Flash (High)",
+      "Gemini 3.5 Flash (High)",
+    ],
+    buildPrompt(args, cwd) {
+      const files = args.files as string[] | undefined;
+      const content = args.content as string | undefined;
+      if (!content && !files?.length) {
+        throw new Error("adversarial_review requires either `content` or `files`.");
+      }
+      const subject = content
+        ? `Review the following:\n\n${content}`
+        : `Read and review these files:\n${resolveFiles(files!, cwd)
+            .map((f) => `- ${f}`)
+            .join("\n")}`;
+      const focus = args.focus ? `\nFocus especially on: ${args.focus}.` : "";
+      return (
+        `You are an adversarial reviewer. Find real flaws: bugs, edge cases, security issues, ` +
+        `performance traps, unstated assumptions, and simpler alternatives.${focus}\n\n${subject}\n\n` +
+        `Rank findings by severity (critical/major/minor) and justify each. ` +
+        `Do not pad with praise or restate the input. ${OUTPUT_RULES}`
+      );
+    },
+  },
 ];
