@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.pymodel/claude-agy-mcp",
+  "name": "io.github.PyModel/claude-agy-mcp",
   "description": "Delegate heavy tasks from Claude Code to the Antigravity CLI (Gemini) with quota-aware failover.",
   "repository": {
     "url": "https://github.com/PyModel/claude-agy-mcp",
     "source": "github"
   },
-  "version": "1.0.1",
+  "version": "1.0.2",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@pymodel/claude-agy-mcp",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "transport": {
         "type": "stdio"
       },
