@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 420" width="1280" height="420" role="img" aria-label="claude-agy-mcp — an MCP server that lets Claude Code delegate heavy tasks to the Antigravity CLI">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f1116"/>
+      <stop offset="100%" stop-color="#12151c"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#e0a83c"/>
+      <stop offset="100%" stop-color="#c2703a"/>
+    </linearGradient>
+    <linearGradient id="rule" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#e0a83c" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#e0a83c" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="420" rx="24" fill="url(#bg)"/>
+
+  <!-- wordmark: bridge mark (two piers, one span, payload crossing) + name -->
+  <g transform="translate(80 62)">
+    <rect x="0" y="10" width="4" height="30" rx="2" fill="url(#mark)"/>
+    <rect x="40" y="10" width="4" height="30" rx="2" fill="url(#mark)"/>
+    <path d="M2 16 Q22 -2 42 16" fill="none" stroke="url(#mark)" stroke-width="3.5" stroke-linecap="round"/>
+    <circle cx="22" cy="7" r="4.5" fill="#e0a83c"/>
+    <text x="64" y="34" font-family="ui-monospace,'SF Mono',Menlo,monospace" font-size="34" letter-spacing="-0.5px" fill="#e8ecf1">claude-agy-mcp</text>
+  </g>
+
+  <line x1="80" y1="122" x2="600" y2="122" stroke="url(#rule)" stroke-width="2"/>
+
+  <text x="80" y="152" font-family="system-ui,-apple-system,'Segoe UI',sans-serif" font-size="17" fill="#8b95a3">Claude Code delegates the heavy work to the Antigravity CLI.</text>
+  <text x="80" y="176" font-family="ui-monospace,'SF Mono',Menlo,monospace" font-size="13" fill="#4b5563">6 tools · quota-aware failover · session continuity</text>
+
+  <!-- terminal -->
+  <rect x="80" y="206" width="1120" height="176" rx="12" fill="#15181f" stroke="#262b35"/>
+  <path d="M80 218 a12 12 0 0 1 12 -12 h1096 a12 12 0 0 1 12 12 v30 h-1120 z" fill="#1b1f27"/>
+  <circle cx="108" cy="230" r="5.5" fill="#3a3f4b"/>
+  <circle cx="128" cy="230" r="5.5" fill="#3a3f4b"/>
+  <circle cx="148" cy="230" r="5.5" fill="#3a3f4b"/>
+  <text x="640" y="235" text-anchor="middle" font-family="ui-monospace,'SF Mono',Menlo,monospace" font-size="13" fill="#6b7280">delegation session</text>
+  <line x1="80" y1="248" x2="1200" y2="248" stroke="#262b35"/>
+
+  <g font-family="ui-monospace,'SF Mono',Menlo,monospace" font-size="18">
+    <text x="116" y="282" fill="#d7dde5"><tspan fill="#e0a83c">▸</tspan> analyze_files<tspan fill="#6b7280" dx="24">14 files · 4,200 lines</tspan></text>
+    <text x="140" y="310" fill="#7d8794">↳ routed → <tspan fill="#aeb6c2">Gemini 3.6 Flash (High)</tspan></text>
+    <text x="140" y="336" fill="#7d8794">↳ 46s · 0 lines entered Claude's context</text>
+    <text x="116" y="364" fill="#4b5563">[<tspan fill="#e0a83c">claude-agy-mcp</tspan>] model: <tspan fill="#9aa4b2">Gemini 3.6 Flash (High)</tspan> · session: <tspan fill="#9aa4b2">1f0c…d4</tspan></text>
+  </g>
+</svg>
