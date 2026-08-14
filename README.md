@@ -64,3 +64,7 @@ Every response ends with a footer:
 ---
 [claude-agy-mcp] model: Gemini 3.6 Flash (High) | session: 1f0c…-d4 (use follow_up to continue)
 ```
+
+### Model routing
+
+On first use the bridge runs `agy models` (cached for the process lifetime) and picks the first available model in the tool's preference chain. If none is available it falls back to `AGY_DEFAULT_MODEL`, and finally to agy's own default. agy silently ignores unknown `--model` values, so the bridge validates names up front instead of letting requests land on the wrong model.
