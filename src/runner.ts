@@ -1,5 +1,9 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { homedir } from "node:os";
 import path from "node:path";
+
+const execFileAsync = promisify(execFile);
 
 export interface RunRequest {
   prompt: string;
@@ -35,3 +39,10 @@ export const SESSIONS_FILE = path.join(
   "cache",
   "last_conversations.json",
 );
+
+// agy reads stdin until EOF even in print mode; an open stdin pipe hangs it forever.
+export const execWithClosedStdin: ExecFn = (file, args, options) => {
+  const promise = execFileAsync(file, args, options);
+  promise.child.stdin?.end();
+  return promise;
+};
