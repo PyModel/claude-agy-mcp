@@ -153,9 +153,11 @@ npm run typecheck
 npm run build      # tsup → dist/index.js
 ```
 
-## Contributors
+## Contributing
 
-Contributions are welcome — open an issue or PR.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) — conventional commits, prettier, and a test per behaviour change. Vulnerabilities go through [SECURITY.md](SECURITY.md), never a public issue.
+
+## Contributors
 
 <a href="https://github.com/PyModel/claude-agy-mcp/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=PyModel/claude-agy-mcp" alt="Contributors" />
