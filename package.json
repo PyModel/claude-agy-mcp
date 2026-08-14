@@ -1,0 +1,34 @@
+{
+  "name": "@pymodel/claude-agy-mcp",
+  "version": "0.4.1",
+  "description": "MCP bridge that lets Claude Code delegate heavy tasks to the Antigravity CLI (agy) — purpose-built tools, model routing with fallback, and multi-turn session continuity.",
+  "mcpName": "io.github.pymodel/claude-agy-mcp",
+  "type": "module",
+  "bin": {
+    "claude-agy-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "CLAUDE.md",
+    "SKILL.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mcp",
+    "claude-code",
+    "antigravity",
+    "agy",
+    "gemini",
+    "delegation"
+  ],
+  "author": "elkaix (https://github.com/elkaix)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PyModel/claude-agy-mcp.git"
+  },
+  "license": "MIT"
+}
