@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Config } from "./config.js";
+import { detectQuota, QuotaError } from "./quota.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -37,6 +38,10 @@ export interface RunnerDeps {
   removeLog(logPath: string): Promise<void>;
   readSessionsFile(): Promise<string>;
   makeLogPath(): string;
+  /** How often to scan the run log for quota errors. */
+  pollMs?: number;
+  /** Delay between SIGTERM and SIGKILL escalation. */
+  killGraceMs?: number;
 }
 
 export type ExecFn = (
@@ -157,38 +162,87 @@ export async function runAgy(
   cfg: Config,
   deps: RunnerDeps = defaultDeps,
 ): Promise<RunResult> {
+  const pollMs = deps.pollMs ?? 1000;
+  const killGraceMs = deps.killGraceMs ?? 5_000;
   const logPath = deps.makeLogPath();
 
   const stdout = await new Promise<string>((resolve, reject) => {
     const child = deps.spawnChild(cfg.agyPath, buildArgs(req, cfg, logPath), req.cwd);
 
-    void child.wait().then(({ code, error }) => {
+    let settled = false;
+    let polling = false;
+
+    const killChild = () => {
+      child.kill("SIGTERM");
+      // Escalation must survive finish()'s cleanup, and unref keeps it from
+      // holding the process open.
+      const escalate = setTimeout(() => child.kill("SIGKILL"), killGraceMs);
+      escalate.unref?.();
+    };
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(poller);
+      fn();
+    };
+
+    const poller = setInterval(async () => {
+      if (polling || settled) return;
+      polling = true;
+      try {
+        const log = await deps.readLog(logPath);
+        if (settled) return; // settled during the async read — don't kill a finished run
+        const quota = detectQuota(log);
+        if (quota) {
+          killChild();
+          finish(() => reject(new QuotaError(req.model, quota)));
+        }
+      } finally {
+        polling = false;
+      }
+    }, pollMs);
+
+    void child.wait().then(async ({ code, error }) => {
+      if (settled) return;
       if (error?.code === "ENOENT") {
-        reject(
-          new Error(
-            `agy CLI not found at "${cfg.agyPath}". Install the Antigravity CLI ` +
-              `(https://antigravity.google/docs/cli-getting-started) or set AGY_PATH.`,
+        finish(() =>
+          reject(
+            new Error(
+              `agy CLI not found at "${cfg.agyPath}". Install the Antigravity CLI ` +
+                `(https://antigravity.google/docs/cli-getting-started) or set AGY_PATH.`,
+            ),
           ),
         );
         return;
       }
       if (error) {
-        reject(new Error(`agy failed: ${error.message}`));
+        finish(() => reject(new Error(`agy failed: ${error.message}`)));
         return;
       }
       const out = child.stdout().trim();
       if (code !== 0) {
         const stderr = child.stderr().trim();
-        reject(new Error(stderr ? `agy failed: ${stderr}` : `agy exited with code ${code}.`));
-        return;
-      }
-      if (!out) {
-        reject(
-          new Error("agy returned empty output (likely hit its print-timeout without a response)."),
+        finish(() =>
+          reject(new Error(stderr ? `agy failed: ${stderr}` : `agy exited with code ${code}.`)),
         );
         return;
       }
-      resolve(out);
+      if (!out) {
+        // agy swallows quota errors and exits 0 with empty output after its
+        // print-timeout — check the log before reporting anything as success.
+        const quota = detectQuota(await deps.readLog(logPath));
+        finish(() =>
+          reject(
+            quota
+              ? new QuotaError(req.model, quota)
+              : new Error(
+                  "agy returned empty output (likely hit its print-timeout without a response).",
+                ),
+          ),
+        );
+        return;
+      }
+      finish(() => resolve(out));
     });
   }).finally(() => void deps.removeLog(logPath).catch(() => {}));
 
