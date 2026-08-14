@@ -11,7 +11,7 @@ describe("loadConfig", () => {
       perToolTimeouts: {},
       maxRuntimeSec: 3600,
       maxOutputChars: 50_000,
-      defaultModel: "Gemini 3.6 Flash (High)",
+      defaultModel: "Gemini 3.7 Flash (High)",
       skipPermissions: true,
       sandbox: false,
       onFailure: "fallback",

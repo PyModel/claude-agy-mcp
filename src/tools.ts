@@ -49,7 +49,7 @@ export const TOOLS: ToolDef[] = [
       question: z.string().describe("What you want to know about these files."),
       ...commonShape,
     },
-    chain: ["Gemini 3.6 Flash (High)", "Gemini 3.5 Flash (High)", "Gemini 3.1 Pro (Low)"],
+    chain: ["Gemini 3.7 Flash (High)", "Gemini 3.5 Flash (High)", "Gemini 3.1 Pro (Low)"],
     buildPrompt(args, cwd) {
       const files = resolveFiles(args.files as string[], cwd);
       return (
@@ -70,7 +70,7 @@ export const TOOLS: ToolDef[] = [
         .describe("What to find, e.g. 'when was the auth middleware refactored and why'."),
       ...commonShape,
     },
-    chain: ["Gemini 3.6 Flash (Medium)", "Gemini 3.6 Flash (High)", "Gemini 3.5 Flash (High)"],
+    chain: ["Gemini 3.7 Flash (Medium)", "Gemini 3.7 Flash (High)", "Gemini 3.5 Flash (High)"],
     buildPrompt(args) {
       return (
         `Search this repository to answer the following. Use git log, git diff, git blame, ` +
@@ -89,7 +89,7 @@ export const TOOLS: ToolDef[] = [
       query: z.string().describe("What to look up on the web."),
       ...commonShape,
     },
-    chain: ["Gemini 3.6 Flash (Medium)", "Gemini 3.6 Flash (High)", "Gemini 3.5 Flash (High)"],
+    chain: ["Gemini 3.7 Flash (Medium)", "Gemini 3.7 Flash (High)", "Gemini 3.5 Flash (High)"],
     buildPrompt(args) {
       return `Look up on the web: ${args.query}\n\nInclude source URLs for key claims. ${OUTPUT_RULES}`;
     },
@@ -115,7 +115,7 @@ export const TOOLS: ToolDef[] = [
     chain: [
       "Gemini 3.1 Pro (High)",
       "Claude Opus 4.6 (Thinking)",
-      "Gemini 3.6 Flash (High)",
+      "Gemini 3.7 Flash (High)",
       "Gemini 3.5 Flash (High)",
     ],
     buildPrompt(args, cwd) {
@@ -163,7 +163,7 @@ export const TOOLS: ToolDef[] = [
       prompt: z.string().describe("The complete task prompt for agy."),
       ...commonShape,
     },
-    chain: ["Gemini 3.6 Flash (High)", "Gemini 3.5 Flash (High)"],
+    chain: ["Gemini 3.7 Flash (High)", "Gemini 3.5 Flash (High)"],
     buildPrompt(args) {
       return args.prompt as string;
     },
