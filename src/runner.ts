@@ -62,3 +62,13 @@ export function buildArgs(req: RunRequest, cfg: Config, logPath: string): string
   args.push("--print-timeout", `${timeoutSec}s`, "-p", req.prompt);
   return args;
 }
+
+export function truncate(text: string, max: number): { text: string; truncated: boolean } {
+  if (text.length <= max) return { text, truncated: false };
+  return {
+    text:
+      `${text.slice(0, max)}\n\n[claude-agy-mcp: output truncated at ${max} chars; ` +
+      `full length was ${text.length} chars. Ask a narrower question or raise AGY_MAX_OUTPUT_CHARS.]`,
+    truncated: true,
+  };
+}
