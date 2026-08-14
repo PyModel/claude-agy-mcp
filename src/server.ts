@@ -80,7 +80,21 @@ export function createToolHandler(
         );
       }
 
-      return { content: [{ type: "text", text: result.output }] };
+      const meta: string[] = [`model: ${used ?? "agy default"}`];
+      if (resolution.note) meta.push(`note: ${resolution.note}`);
+      if (attempts.length) meta.push(`failover: ${attempts.join("; ")}`);
+      if (result.sessionId) meta.push(`session: ${result.sessionId} (use follow_up to continue)`);
+      const output = result.timedOut
+        ? `[claude-agy-mcp] MAXIMUM RUNTIME EXCEEDED after ${timeoutSec}s — ` +
+          "agy was killed at the resource ceiling (AGY_MAX_RUNTIME). This is not a diagnosis " +
+          "that it was stuck. Any file changes it already made are on disk. Partial output follows.\n" +
+          result.output
+        : result.output;
+
+      return {
+        content: [{ type: "text", text: `${output}\n\n---\n[claude-agy-mcp] ${meta.join(" | ")}` }],
+        isError: result.timedOut || undefined,
+      };
     } catch (err) {
       let text = (err as Error).message;
       if (cfg.onFailure === "strict") {
