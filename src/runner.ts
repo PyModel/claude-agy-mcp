@@ -151,3 +151,47 @@ export function truncate(text: string, max: number): { text: string; truncated: 
     truncated: true,
   };
 }
+
+export async function runAgy(
+  req: RunRequest,
+  cfg: Config,
+  deps: RunnerDeps = defaultDeps,
+): Promise<RunResult> {
+  const logPath = deps.makeLogPath();
+
+  const stdout = await new Promise<string>((resolve, reject) => {
+    const child = deps.spawnChild(cfg.agyPath, buildArgs(req, cfg, logPath), req.cwd);
+
+    void child.wait().then(({ code, error }) => {
+      if (error?.code === "ENOENT") {
+        reject(
+          new Error(
+            `agy CLI not found at "${cfg.agyPath}". Install the Antigravity CLI ` +
+              `(https://antigravity.google/docs/cli-getting-started) or set AGY_PATH.`,
+          ),
+        );
+        return;
+      }
+      if (error) {
+        reject(new Error(`agy failed: ${error.message}`));
+        return;
+      }
+      const out = child.stdout().trim();
+      if (code !== 0) {
+        const stderr = child.stderr().trim();
+        reject(new Error(stderr ? `agy failed: ${stderr}` : `agy exited with code ${code}.`));
+        return;
+      }
+      if (!out) {
+        reject(
+          new Error("agy returned empty output (likely hit its print-timeout without a response)."),
+        );
+        return;
+      }
+      resolve(out);
+    });
+  }).finally(() => void deps.removeLog(logPath).catch(() => {}));
+
+  const { text, truncated } = truncate(stdout, cfg.maxOutputChars);
+  return { output: text, truncated };
+}
