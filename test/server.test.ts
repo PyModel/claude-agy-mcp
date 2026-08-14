@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { createToolHandler } from "../src/server.js";
+import { readFile } from "node:fs/promises";
+import { createToolHandler, VERSION } from "../src/server.js";
 import { ModelRegistry } from "../src/models.js";
 import { TOOLS } from "../src/tools.js";
 import { CooldownRegistry } from "../src/quota.js";
@@ -228,4 +229,9 @@ describe("createToolHandler", () => {
     expect(res.isError).toBe(true);
     expect((res.content[0] as { text: string }).text).toMatch(/cancelled/i);
   });
+});
+
+it("advertises the published package version", async () => {
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  expect(VERSION).toBe(pkg.version);
 });
