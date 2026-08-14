@@ -1,0 +1,64 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.pymodel/claude-agy-mcp",
+  "description": "Delegate heavy tasks from Claude Code to the Antigravity CLI (Gemini) with quota-aware failover.",
+  "repository": {
+    "url": "https://github.com/PyModel/claude-agy-mcp",
+    "source": "github"
+  },
+  "version": "0.4.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@pymodel/claude-agy-mcp",
+      "version": "0.4.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "description": "Path to the agy binary (defaults to `agy` on PATH)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "AGY_PATH"
+        },
+        {
+          "description": "Override the runtime ceiling for all tools, in seconds (use AGY_TIMEOUT_<TOOL> to override a single tool)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "AGY_TIMEOUT"
+        },
+        {
+          "description": "Absolute runtime ceiling in seconds (default 3600); the bridge does not kill on inactivity, only on cancellation, quota exhaustion, or this ceiling",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "AGY_MAX_RUNTIME"
+        },
+        {
+          "description": "Truncation cap for tool output, in characters (default 50000)",
+          "isRequired": false,
+          "format": "number",
+          "isSecret": false,
+          "name": "AGY_MAX_OUTPUT_CHARS"
+        },
+        {
+          "description": "Fallback model when no chain entry is available (defaults to Gemini 3.6 Flash (High))",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "AGY_DEFAULT_MODEL"
+        },
+        {
+          "description": "Set to `strict` to instruct the calling agent not to absorb failed delegations (default `fallback`)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false,
+          "name": "AGY_ON_FAILURE"
+        }
+      ]
+    }
+  ]
+}
