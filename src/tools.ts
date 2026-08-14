@@ -138,4 +138,20 @@ export const TOOLS: ToolDef[] = [
       );
     },
   },
+  {
+    name: "follow_up",
+    description:
+      "Continue a previous Antigravity session by session_id (returned by every other tool). " +
+      "USE THIS for follow-up questions about a prior delegation — the full prior context " +
+      "is already on agy's side, so you don't resend anything.",
+    schema: {
+      session_id: z.string().describe("The session id returned by a previous claude-agy-mcp call."),
+      question: z.string().describe("The follow-up question."),
+      ...commonShape,
+    },
+    chain: [],
+    buildPrompt(args) {
+      return args.question as string;
+    },
+  },
 ];
