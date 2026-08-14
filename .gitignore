@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.log
+*.tgz
+package/
+.agents/
+docs/*
+!docs/multi-client-support.md
