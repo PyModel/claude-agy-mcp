@@ -79,4 +79,19 @@ export const TOOLS: ToolDef[] = [
       );
     },
   },
+  {
+    name: "web_lookup",
+    description:
+      "Delegate a web/documentation lookup to the Antigravity CLI (Gemini with web access): " +
+      "library docs, API references, error messages, current versions, external knowledge. " +
+      "USE THIS when you need information you don't have or that may be newer than your training data.",
+    schema: {
+      query: z.string().describe("What to look up on the web."),
+      ...commonShape,
+    },
+    chain: ["Gemini 3.6 Flash (Medium)", "Gemini 3.6 Flash (High)", "Gemini 3.5 Flash (High)"],
+    buildPrompt(args) {
+      return `Look up on the web: ${args.query}\n\nInclude source URLs for key claims. ${OUTPUT_RULES}`;
+    },
+  },
 ];
