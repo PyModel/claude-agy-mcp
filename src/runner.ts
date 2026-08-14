@@ -21,6 +21,7 @@ export interface RunRequest {
 export interface RunResult {
   output: string;
   truncated: boolean;
+  timedOut?: boolean;
 }
 
 export interface ChildHandle {
@@ -40,6 +41,8 @@ export interface RunnerDeps {
   makeLogPath(): string;
   /** How often to scan the run log for quota errors. */
   pollMs?: number;
+  /** Extra wait beyond agy's own --print-timeout before we hard-kill. */
+  graceMs?: number;
   /** Delay between SIGTERM and SIGKILL escalation. */
   killGraceMs?: number;
 }
@@ -162,15 +165,19 @@ export async function runAgy(
   cfg: Config,
   deps: RunnerDeps = defaultDeps,
 ): Promise<RunResult> {
+  const timeoutSec = req.timeoutSec ?? cfg.timeoutSec;
   const pollMs = deps.pollMs ?? 1000;
+  const graceMs = deps.graceMs ?? 15_000;
   const killGraceMs = deps.killGraceMs ?? 5_000;
   const logPath = deps.makeLogPath();
+  let timedOut = false;
 
   const stdout = await new Promise<string>((resolve, reject) => {
     const child = deps.spawnChild(cfg.agyPath, buildArgs(req, cfg, logPath), req.cwd);
 
     let settled = false;
     let polling = false;
+    const timers: NodeJS.Timeout[] = [];
 
     const killChild = () => {
       child.kill("SIGTERM");
@@ -183,6 +190,7 @@ export async function runAgy(
       if (settled) return;
       settled = true;
       clearInterval(poller);
+      for (const t of timers) clearTimeout(t);
       fn();
     };
 
@@ -201,6 +209,19 @@ export async function runAgy(
         polling = false;
       }
     }, pollMs);
+
+    // Hard deadline independent of the child's pipes: agy's own --print-timeout
+    // should fire first; if it doesn't, resolve with partial output without waiting for "close".
+    timers.push(
+      setTimeout(
+        () => {
+          killChild();
+          timedOut = true;
+          finish(() => resolve(child.stdout().trim()));
+        },
+        timeoutSec * 1000 + graceMs,
+      ),
+    );
 
     void child.wait().then(async ({ code, error }) => {
       if (settled) return;
@@ -247,5 +268,5 @@ export async function runAgy(
   }).finally(() => void deps.removeLog(logPath).catch(() => {}));
 
   const { text, truncated } = truncate(stdout, cfg.maxOutputChars);
-  return { output: text, truncated };
+  return { output: text, truncated, ...(timedOut ? { timedOut: true } : {}) };
 }
