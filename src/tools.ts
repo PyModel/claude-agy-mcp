@@ -154,4 +154,18 @@ export const TOOLS: ToolDef[] = [
       return args.question as string;
     },
   },
+  {
+    name: "delegate",
+    description:
+      "Raw delegation to the Antigravity CLI for heavy tasks that don't fit the other tools. " +
+      "agy has full tool access (shell, file reads, web) in the given cwd.",
+    schema: {
+      prompt: z.string().describe("The complete task prompt for agy."),
+      ...commonShape,
+    },
+    chain: ["Gemini 3.6 Flash (High)", "Gemini 3.5 Flash (High)"],
+    buildPrompt(args) {
+      return args.prompt as string;
+    },
+  },
 ];
