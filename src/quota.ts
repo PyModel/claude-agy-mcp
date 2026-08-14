@@ -30,3 +30,20 @@ export function detectQuota(log: string): QuotaInfo | null {
   const resetSeconds = reset ? parseResetDuration(reset) : undefined;
   return { resetText: resetSeconds !== undefined ? reset : undefined, resetSeconds };
 }
+
+export class QuotaError extends Error {
+  readonly resetSeconds?: number;
+  readonly resetText?: string;
+
+  constructor(
+    readonly model: string | undefined,
+    info: QuotaInfo,
+  ) {
+    const who = model ?? "agy's default model";
+    const when = info.resetText ? ` Quota resets in ${info.resetText}.` : "";
+    super(`Quota exhausted for ${who} (RESOURCE_EXHAUSTED 429).${when}`);
+    this.name = "QuotaError";
+    this.resetSeconds = info.resetSeconds;
+    this.resetText = info.resetText;
+  }
+}
