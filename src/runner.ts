@@ -1,6 +1,8 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { homedir } from "node:os";
+import { readFile, rm } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Config } from "./config.js";
 
@@ -27,6 +29,14 @@ export interface ChildHandle {
   wait(): Promise<{ code: number | null; error?: NodeJS.ErrnoException }>;
   /** Signals the whole process group so web-search helpers can't outlive agy. */
   kill(signal: NodeJS.Signals): void;
+}
+
+export interface RunnerDeps {
+  spawnChild(file: string, args: string[], cwd: string): ChildHandle;
+  readLog(logPath: string): Promise<string>;
+  removeLog(logPath: string): Promise<void>;
+  readSessionsFile(): Promise<string>;
+  makeLogPath(): string;
 }
 
 export type ExecFn = (
@@ -104,6 +114,20 @@ function spawnDetached(file: string, args: string[], cwd: string): ChildHandle {
     },
   };
 }
+
+export const defaultDeps: RunnerDeps = {
+  spawnChild: spawnDetached,
+  readLog: async (logPath) => {
+    try {
+      return await readFile(logPath, "utf8");
+    } catch {
+      return "";
+    }
+  },
+  removeLog: (logPath) => rm(logPath, { force: true }),
+  readSessionsFile: () => readFile(SESSIONS_FILE, "utf8"),
+  makeLogPath: () => path.join(tmpdir(), `claude-agy-mcp-${process.pid}-${randomUUID()}.log`),
+};
 
 export function buildArgs(req: RunRequest, cfg: Config, logPath: string): string[] {
   const timeoutSec = req.timeoutSec ?? cfg.timeoutSec;
