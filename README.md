@@ -25,6 +25,13 @@
   <a href="#configuration"><b>Configuration</b></a>
 </p>
 
+# ⚡ Install
+
+```bash
+claude mcp add-json -s user claude-agy-mcp \
+  '{"type":"stdio","command":"npx","args":["-y","@pymodel/claude-agy-mcp"],"timeout":3600000}'
+```
+
 **Claude Code delegates heavy tasks to Google's flagship Gemini 3.7 Flash (High)** via the Antigravity CLI (`agy`) — saving Claude's context window and tokens for what matters.
 
 Claude acts as the orchestrator → `claude-agy-mcp` routes compute-heavy sub-tasks to **Gemini 3.7 Flash (High)** → only concise answers return. Large files, deep git searches, and log dumps never pollute Claude's context.
@@ -259,3 +266,6 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) — conventional commits, prettier, and 
 ## License
 
 MIT
+
+<!-- hidden visitor counter -->
+<img src="https://komarev.com/ghpvc/?username=pymodel-claude-agy-mcp&label=&color=blueviolet&style=flat" alt="" width="1" height="1">
