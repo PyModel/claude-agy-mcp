@@ -10,7 +10,9 @@ import {
 } from "./runner.js";
 import { CooldownRegistry, QuotaError } from "./quota.js";
 import { TOOLS, type ToolDef } from "./tools.js";
-import pkg from "../package.json" with { type: "json" };
+
+/** Keep in sync with package.json — test/server.test.ts fails if they drift. */
+export const VERSION = "1.0.0";
 
 interface ToolResponse {
   [key: string]: unknown;
@@ -125,7 +127,7 @@ export function createServer(): McpServer {
   });
   const cooldowns = new CooldownRegistry();
 
-  const server = new McpServer({ name: "claude-agy-mcp", version: pkg.version });
+  const server = new McpServer({ name: "claude-agy-mcp", version: VERSION });
   for (const tool of TOOLS) {
     server.registerTool(
       tool.name,
