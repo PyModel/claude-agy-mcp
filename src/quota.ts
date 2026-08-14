@@ -1,3 +1,14 @@
+/**
+ * Quota detection and cooldown tracking for agy model failover.
+ *
+ * agy never surfaces RESOURCE_EXHAUSTED to stdout/stderr in print mode — it
+ * silently retries until --print-timeout, then exits 0 with empty output.
+ * The only reliable signal is the 429 line in its log file, which includes
+ * the exact reset time ("Resets in 96h53m25s").
+ */
+
+export const DEFAULT_COOLDOWN_SEC = 15 * 60;
+
 const QUOTA_RE = /RESOURCE_EXHAUSTED \(code 429\)/;
 const RESET_RE = /Resets in ((?:\d+h)?(?:\d+m)?(?:\d+s)?)\b/;
 
@@ -45,5 +56,25 @@ export class QuotaError extends Error {
     this.name = "QuotaError";
     this.resetSeconds = info.resetSeconds;
     this.resetText = info.resetText;
+  }
+}
+
+export class CooldownRegistry {
+  private until = new Map<string, number>();
+
+  constructor(private now: () => number = Date.now) {}
+
+  set(model: string, resetSeconds: number | undefined): void {
+    this.until.set(model, this.now() + (resetSeconds ?? DEFAULT_COOLDOWN_SEC) * 1000);
+  }
+
+  cooling(model: string): boolean {
+    const t = this.until.get(model);
+    return t !== undefined && t > this.now();
+  }
+
+  describe(model: string): string {
+    const t = this.until.get(model);
+    return formatDuration(t === undefined ? 0 : (t - this.now()) / 1000);
   }
 }
