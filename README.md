@@ -28,6 +28,10 @@
 # ⚡ Install
 
 ```bash
+npm i @pymodel/claude-agy-mcp
+```
+
+```bash
 claude mcp add-json -s user claude-agy-mcp \
   '{"type":"stdio","command":"npx","args":["-y","@pymodel/claude-agy-mcp"],"timeout":3600000}'
 ```
