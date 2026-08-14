@@ -2,6 +2,21 @@
 
 <img src="https://raw.githubusercontent.com/PyModel/claude-agy-mcp/main/assets/banner.svg" alt="claude-agy-mcp — Claude Code delegates heavy tasks to the Antigravity CLI" width="100%">
 
+<p>
+  <a href="https://github.com/PyModel/claude-agy-mcp/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/PyModel/claude-agy-mcp/ci.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&label=CI&labelColor=1b1f27&color=e0a83c"></a>
+  <a href="https://www.npmjs.com/package/@pymodel/claude-agy-mcp"><img alt="npm version" src="https://img.shields.io/npm/v/@pymodel/claude-agy-mcp?style=for-the-badge&logo=npm&logoColor=white&label=npm&labelColor=1b1f27&color=e0a83c"></a>
+  <a href="https://www.npmjs.com/package/@pymodel/claude-agy-mcp"><img alt="npm downloads" src="https://img.shields.io/npm/dm/@pymodel/claude-agy-mcp?style=for-the-badge&logo=npm&logoColor=white&label=downloads&labelColor=1b1f27&color=e0a83c"></a>
+  <a href="https://nodejs.org"><img alt="node" src="https://img.shields.io/node/v/@pymodel/claude-agy-mcp?style=for-the-badge&logo=nodedotjs&logoColor=white&label=node&labelColor=1b1f27&color=e0a83c"></a>
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/npm/l/@pymodel/claude-agy-mcp?style=for-the-badge&logo=opensourceinitiative&logoColor=white&label=license&labelColor=1b1f27&color=e0a83c"></a>
+</p>
+
+<p>
+  <a href="#install"><b>Install</b></a> ·
+  <a href="#tools"><b>Tools</b></a> ·
+  <a href="#timeouts-and-cancellation"><b>Timeouts</b></a> ·
+  <a href="#configuration"><b>Configuration</b></a>
+</p>
+
 **Claude Code delegates heavy tasks to the Antigravity CLI (`agy`)** — saving Claude's context window and tokens for what matters.
 
 </div>
