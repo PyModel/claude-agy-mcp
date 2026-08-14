@@ -58,4 +58,25 @@ export const TOOLS: ToolDef[] = [
       );
     },
   },
+  {
+    name: "deep_search",
+    description:
+      "Delegate codebase archaeology to the Antigravity CLI: git log/diff/blame spelunking, " +
+      "wide greps across a repo, 'when/why did X change', 'where is Y used'. " +
+      "USE THIS instead of running many search commands yourself — it saves your context.",
+    schema: {
+      query: z
+        .string()
+        .describe("What to find, e.g. 'when was the auth middleware refactored and why'."),
+      ...commonShape,
+    },
+    chain: ["Gemini 3.6 Flash (Medium)", "Gemini 3.6 Flash (High)", "Gemini 3.5 Flash (High)"],
+    buildPrompt(args) {
+      return (
+        `Search this repository to answer the following. Use git log, git diff, git blame, ` +
+        `and grep as needed.\n\nQuery: ${args.query}\n\n` +
+        `Report findings with commit hashes where relevant. ${OUTPUT_RULES}`
+      );
+    },
+  },
 ];
