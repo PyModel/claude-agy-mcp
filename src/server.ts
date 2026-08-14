@@ -1,6 +1,12 @@
 import type { Config } from "./config.js";
 import { ModelRegistry } from "./models.js";
-import { runAgy, defaultDeps, type RunnerDeps } from "./runner.js";
+import {
+  runAgy,
+  defaultDeps,
+  type RunnerDeps,
+  type RunResult,
+} from "./runner.js";
+import { CooldownRegistry, QuotaError } from "./quota.js";
 import type { ToolDef } from "./tools.js";
 
 interface ToolResponse {
@@ -18,6 +24,7 @@ export function createToolHandler(
   cfg: Config,
   registry: ModelRegistry,
   deps: RunnerDeps = defaultDeps,
+  cooldowns: CooldownRegistry = new CooldownRegistry(),
 ): (args: Record<string, unknown>, extra?: HandlerExtra) => Promise<ToolResponse> {
   return async (args, extra) => {
     try {
@@ -36,18 +43,43 @@ export function createToolHandler(
             defaultModel: cfg.defaultModel,
           });
 
-      const result = await runAgy(
-        {
-          prompt,
-          cwd,
-          model: resolution.models[0],
-          conversationId,
-          timeoutSec,
-          signal: extra?.signal,
-        },
-        cfg,
-        deps,
-      );
+      const attempts: string[] = [];
+      let result: RunResult | undefined;
+      let used: string | undefined;
+
+      for (const model of resolution.models) {
+        if (model && cooldowns.cooling(model)) {
+          attempts.push(`${model}: quota cooldown, ${cooldowns.describe(model)} left`);
+          continue;
+        }
+        try {
+          result = await runAgy(
+            { prompt, cwd, model, conversationId, timeoutSec, signal: extra?.signal },
+            cfg,
+            deps,
+          );
+          used = model;
+          break;
+        } catch (err) {
+          if (err instanceof QuotaError && model) {
+            cooldowns.set(model, err.resetSeconds);
+            attempts.push(
+              `${model}: quota exhausted${err.resetText ? ` (resets in ${err.resetText})` : ""}`,
+            );
+            continue;
+          }
+          throw err;
+        }
+      }
+
+      if (!result) {
+        throw new Error(
+          `All candidate models are quota-exhausted or cooling down:\n` +
+            `${attempts.map((a) => `- ${a}`).join("\n")}\n` +
+            `Retry after the quota resets, or pass an explicit \`model\`.`,
+        );
+      }
+
       return { content: [{ type: "text", text: result.output }] };
     } catch (err) {
       let text = (err as Error).message;
