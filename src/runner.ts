@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -49,6 +49,61 @@ export const execWithClosedStdin: ExecFn = (file, args, options) => {
   promise.child.stdin?.end();
   return promise;
 };
+
+const MAX_STDOUT_CHARS = 64 * 1024 * 1024;
+const MAX_STDERR_CHARS = 1024 * 1024;
+
+function spawnDetached(file: string, args: string[], cwd: string): ChildHandle {
+  const child = spawn(file, args, { cwd, detached: true });
+  child.stdin?.end();
+
+  let out = "";
+  let err = "";
+  child.stdout?.on("data", (d: Buffer) => {
+    if (out.length < MAX_STDOUT_CHARS) out += d.toString();
+  });
+  child.stderr?.on("data", (d: Buffer) => {
+    if (err.length < MAX_STDERR_CHARS) err += d.toString();
+  });
+
+  const done = new Promise<{ code: number | null; error?: NodeJS.ErrnoException }>((resolve) => {
+    let exitCode: number | null = null;
+    // "close" needs all pipes shut; orphaned grandchildren can hold them open
+    // forever, so resolve from "exit" after a short grace if "close" never fires.
+    let closeFallback: NodeJS.Timeout | undefined;
+    child.on("exit", (code) => {
+      exitCode = code;
+      closeFallback = setTimeout(() => resolve({ code: exitCode }), 2000);
+      closeFallback.unref();
+    });
+    child.on("close", (code) => {
+      if (closeFallback) clearTimeout(closeFallback);
+      resolve({ code: code ?? exitCode });
+    });
+    child.on("error", (e) => {
+      resolve({ code: null, error: e as NodeJS.ErrnoException });
+    });
+  });
+
+  return {
+    stdout: () => out,
+    stderr: () => err,
+    wait: () => done,
+    kill: (signal) => {
+      if (child.pid === undefined) return;
+      try {
+        process.kill(-child.pid, signal); // whole process group
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ESRCH") return;
+        try {
+          child.kill(signal);
+        } catch {
+          // already gone
+        }
+      }
+    },
+  };
+}
 
 export function buildArgs(req: RunRequest, cfg: Config, logPath: string): string[] {
   const timeoutSec = req.timeoutSec ?? cfg.timeoutSec;
