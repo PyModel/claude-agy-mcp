@@ -16,6 +16,8 @@ export interface RunRequest {
   conversationId?: string;
   /** Per-call timeout; falls back to cfg.timeoutSec. */
   timeoutSec?: number;
+  /** MCP cancellation signal — kills the agy process when aborted. */
+  signal?: AbortSignal;
 }
 
 export interface RunResult {
@@ -191,6 +193,7 @@ export async function runAgy(
       settled = true;
       clearInterval(poller);
       for (const t of timers) clearTimeout(t);
+      req.signal?.removeEventListener("abort", onAbort);
       fn();
     };
 
@@ -222,6 +225,16 @@ export async function runAgy(
         timeoutSec * 1000 + graceMs,
       ),
     );
+
+    const onAbort = () => {
+      killChild();
+      finish(() => reject(new Error("agy run cancelled by client.")));
+    };
+    if (req.signal?.aborted) {
+      onAbort();
+      return;
+    }
+    req.signal?.addEventListener("abort", onAbort, { once: true });
 
     void child.wait().then(async ({ code, error }) => {
       if (settled) return;
