@@ -8,6 +8,7 @@
   <a href="https://www.npmjs.com/package/@pymodel/claude-agy-mcp"><img alt="npm downloads" src="https://img.shields.io/npm/dm/@pymodel/claude-agy-mcp?style=for-the-badge&logo=npm&logoColor=white&label=downloads&labelColor=1b1f27&color=4E86F5"></a>
   <a href="https://nodejs.org"><img alt="node" src="https://img.shields.io/node/v/@pymodel/claude-agy-mcp?style=for-the-badge&logo=nodedotjs&logoColor=white&label=node&labelColor=1b1f27&color=339933"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/npm/l/@pymodel/claude-agy-mcp?style=for-the-badge&logo=opensourceinitiative&logoColor=white&label=license&labelColor=1b1f27&color=9B72CB"></a>
+  <img alt="visitors" src="https://komarev.com/ghpvc/?username=pymodel-claude-agy-mcp&label=VISITORS&color=blueviolet&style=for-the-badge">
 </p>
 
 <p>
@@ -270,7 +271,3 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) — conventional commits, prettier, and 
 ## License
 
 MIT
-
-<p align="center">
-  <img src="https://komarev.com/ghpvc/?username=pymodel-claude-agy-mcp&label=Visitors&color=blueviolet&style=for-the-badge" alt="Visitor count">
-</p>
