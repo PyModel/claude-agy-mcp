@@ -26,7 +26,8 @@ export function renderDelegation(d: Delegation, timeoutSec: number): string {
 
   const output = d.timedOut
     ? `[claude-agy-mcp] MAXIMUM RUNTIME EXCEEDED after ${timeoutSec}s — ` +
-      "agy was killed at the resource ceiling (AGY_MAX_RUNTIME). This is not a diagnosis " +
+      "agy was killed at this tool's configured runtime limit (AGY_TIMEOUT_<TOOL>, " +
+      "else AGY_TIMEOUT, else AGY_MAX_RUNTIME). This is not a diagnosis " +
       "that it was stuck. Any file changes it already made are on disk. Partial output follows.\n" +
       d.output
     : d.output;

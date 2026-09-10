@@ -70,9 +70,10 @@ describe("renderDelegation", () => {
   it("prefixes a timed-out run with the runtime-ceiling notice", () => {
     const text = renderDelegation(delegation({ output: "partial output", timedOut: true }), 900);
     expect(text).toContain(
-      "[claude-agy-mcp] MAXIMUM RUNTIME EXCEEDED after 900s — agy was killed at the resource " +
-        "ceiling (AGY_MAX_RUNTIME). This is not a diagnosis that it was stuck. Any file changes " +
-        "it already made are on disk. Partial output follows.",
+      "[claude-agy-mcp] MAXIMUM RUNTIME EXCEEDED after 900s — agy was killed at this tool's " +
+        "configured runtime limit (AGY_TIMEOUT_<TOOL>, else AGY_TIMEOUT, else AGY_MAX_RUNTIME). " +
+        "This is not a diagnosis that it was stuck. Any file changes it already made are on " +
+        "disk. Partial output follows.",
     );
     expect(text).toContain("partial output");
   });

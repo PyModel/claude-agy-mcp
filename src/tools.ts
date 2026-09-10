@@ -125,7 +125,8 @@ export const TOOLS: ToolDef[] = [
     description:
       "Get an adversarial second opinion from a different model family (Gemini Pro). " +
       "ALWAYS use this for plan critiques, design reviews, and pre-merge code review: " +
-      "it hunts for flaws, edge cases, security issues, and unstated assumptions you may have missed.",
+      "it hunts for flaws, edge cases, security issues, and unstated assumptions you may have missed. " +
+      "Pass either `content` or `files` \u2014 a call with neither is rejected.",
     schema: z
       .object({
         content: z

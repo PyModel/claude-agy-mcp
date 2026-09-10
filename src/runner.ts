@@ -257,7 +257,9 @@ export async function runAgy(
       }
       finish(() => resolve(out));
     });
-  }).finally(() => void rm(logPath, { force: true }).catch(() => {}));
+    // Returned, not discarded: callers (and tests) must not observe the log
+    // still on disk after runAgy resolves.
+  }).finally(() => rm(logPath, { force: true }).catch(() => {}));
 
   return { output: truncate(stdout, cfg.maxOutputChars), ...(timedOut ? { timedOut: true } : {}) };
 }
