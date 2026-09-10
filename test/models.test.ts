@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { writeFileSync, chmodSync } from "node:fs";
+import { writeFileSync, chmodSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseModels, ModelRegistry, listModels } from "../src/models.js";
@@ -161,6 +161,10 @@ describe("listModels", () => {
     const stub = path.join(tmpdir(), `agy-stub-${process.pid}.sh`);
     writeFileSync(stub, '#!/bin/sh\ncat >/dev/null\necho "Gemini 3.7 Flash (High)"\n');
     chmodSync(stub, 0o755);
-    expect(parseModels(await listModels(stub))).toEqual(["Gemini 3.7 Flash (High)"]);
+    try {
+      expect(parseModels(await listModels(stub))).toEqual(["Gemini 3.7 Flash (High)"]);
+    } finally {
+      rmSync(stub, { force: true });
+    }
   });
 });

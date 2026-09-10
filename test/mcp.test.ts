@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { createServer, VERSION } from "../src/server.js";
+import { TOOLS } from "../src/tools.js";
 
 /**
  * Protocol-level checks: what an MCP client actually sees. These never reach agy
@@ -23,14 +24,7 @@ describe("the server over MCP", () => {
 
   it("advertises every tool with its version", async () => {
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual([
-      "adversarial_review",
-      "analyze_files",
-      "deep_search",
-      "delegate",
-      "follow_up",
-      "web_lookup",
-    ]);
+    expect(tools.map((t) => t.name).sort()).toEqual(TOOLS.map((t) => t.name).sort());
     expect(client.getServerVersion()?.version).toBe(VERSION);
   });
 

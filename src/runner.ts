@@ -132,14 +132,13 @@ export function buildArgs(req: RunRequest, cfg: Config, logPath: string): string
   return args;
 }
 
-export function truncate(text: string, max: number): { text: string; truncated: boolean } {
-  if (text.length <= max) return { text, truncated: false };
-  return {
-    text:
-      `${text.slice(0, max)}\n\n[claude-agy-mcp: output truncated at ${max} chars; ` +
-      `full length was ${text.length} chars. Ask a narrower question or raise AGY_MAX_OUTPUT_CHARS.]`,
-    truncated: true,
-  };
+/** Cuts `text` to `max`, stating the cut inside the text it returns. */
+export function truncate(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return (
+    `${text.slice(0, max)}\n\n[claude-agy-mcp: output truncated at ${max} chars; ` +
+    `full length was ${text.length} chars. Ask a narrower question or raise AGY_MAX_OUTPUT_CHARS.]`
+  );
 }
 
 export async function runAgy(
@@ -260,6 +259,5 @@ export async function runAgy(
     });
   }).finally(() => void rm(logPath, { force: true }).catch(() => {}));
 
-  const { text } = truncate(stdout, cfg.maxOutputChars);
-  return { output: text, ...(timedOut ? { timedOut: true } : {}) };
+  return { output: truncate(stdout, cfg.maxOutputChars), ...(timedOut ? { timedOut: true } : {}) };
 }

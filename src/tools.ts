@@ -35,8 +35,6 @@ export const ROUTING_ARGS = z.object({
   session_id: z.string().optional(),
 });
 
-export type RoutingArgs = z.output<typeof ROUTING_ARGS>;
-
 type ToolSchema = z.ZodObject<z.ZodRawShape>;
 
 export interface ToolDef {

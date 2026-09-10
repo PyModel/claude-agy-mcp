@@ -39,8 +39,8 @@ export function createToolHandler(
   cfg: Config,
   delegator: Delegator,
 ): (args: Record<string, unknown>, extra?: HandlerExtra) => Promise<ToolResponse> {
+  const timeoutSec = timeoutFor(cfg, tool.name);
   return async (args, extra) => {
-    const timeoutSec = timeoutFor(cfg, tool.name);
     try {
       const routing = ROUTING_ARGS.parse(args);
       const delegation = await delegator.run({

@@ -1,13 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { readFile } from "node:fs/promises";
 import { createToolHandler, renderDelegation, VERSION } from "../src/server.js";
-import { Delegator, type Delegation } from "../src/delegation.js";
-import { ModelRegistry } from "../src/models.js";
-import { TOOLS } from "../src/tools.js";
+import { type Delegation } from "../src/delegation.js";
 import type { Config } from "../src/config.js";
-import { fakeAgy, FAST_TIMING, LISTING, testConfig } from "./support.js";
-
-const toolNamed = (name: string) => TOOLS.find((t) => t.name === name)!;
+import { fakeAgy, makeDelegator, toolNamed, valueOf } from "./support.js";
 
 const delegation = (over: Partial<Delegation> = {}): Delegation => ({
   output: "the answer",
@@ -19,13 +15,25 @@ const delegation = (over: Partial<Delegation> = {}): Delegation => ({
 
 const textOf = (res: { content: { text: string }[] }) => res.content[0].text;
 
-function handlerFor(name: string, overrides: Partial<Config> = {}) {
-  const cfg = { ...testConfig, ...overrides };
-  const agy = fakeAgy({ stdout: "the answer" });
-  const delegator = new Delegator(cfg, new ModelRegistry(async () => LISTING), undefined, {
+/** A fake agy that cannot be launched at all, standing in for a broken binary. */
+const exploding = (): ReturnType<typeof fakeAgy> => ({
+  spawn: () => {
+    throw new Error("kaboom");
+  },
+  runs: [],
+  kills: [],
+  modelOf: () => undefined,
+});
+
+function handlerFor(
+  name: string,
+  overrides: Partial<Config> = {},
+  agy = fakeAgy({ stdout: "the answer" }),
+) {
+  const { cfg, delegator } = makeDelegator({
     spawn: agy.spawn,
-    timing: FAST_TIMING,
-    readSessions: async () => JSON.stringify({ [process.cwd()]: "sess-1" }),
+    cfg: overrides,
+    sessions: JSON.stringify({ [process.cwd()]: "sess-1" }),
   });
   return { handler: createToolHandler(toolNamed(name), cfg, delegator), agy };
 }
@@ -83,64 +91,50 @@ describe("createToolHandler", () => {
     for (const name of ["delegate", "web_lookup"]) {
       const { handler, agy } = handlerFor(name);
       await handler(name === "delegate" ? { prompt: "x" } : { query: "x" });
-      const args = agy.runs[0];
-      expect(args[args.indexOf("--print-timeout") + 1]).toBe("3600s");
+      expect(valueOf(agy.runs[0], "--print-timeout")).toBe("3600s");
     }
   });
 
   it("uses the configured default timeout", async () => {
     const { handler, agy } = handlerFor("web_lookup", { defaultTimeoutSec: 900 });
     await handler({ query: "q" });
-    const args = agy.runs[0];
-    expect(args[args.indexOf("--print-timeout") + 1]).toBe("900s");
+    expect(valueOf(agy.runs[0], "--print-timeout")).toBe("900s");
   });
 
   it("a per-tool override wins over the default timeout", async () => {
     const cfg = { defaultTimeoutSec: 900, perToolTimeouts: { deep_search: 300 } };
     const search = handlerFor("deep_search", cfg);
     await search.handler({ query: "q" });
-    expect(search.agy.runs[0][search.agy.runs[0].indexOf("--print-timeout") + 1]).toBe("300s");
+    expect(valueOf(search.agy.runs[0], "--print-timeout")).toBe("300s");
 
     const lookup = handlerFor("web_lookup", cfg);
     await lookup.handler({ query: "q" });
-    expect(lookup.agy.runs[0][lookup.agy.runs[0].indexOf("--print-timeout") + 1]).toBe("900s");
+    expect(valueOf(lookup.agy.runs[0], "--print-timeout")).toBe("900s");
   });
 
   it("flags a timed-out delegation as an error", async () => {
-    const agy = fakeAgy({ neverExit: true, stdout: "partial output" });
-    const cfg = { ...testConfig, defaultTimeoutSec: 0.05 };
-    const delegator = new Delegator(cfg, new ModelRegistry(async () => LISTING), undefined, {
-      spawn: agy.spawn,
-      timing: FAST_TIMING,
-      readSessions: async () => "{}",
-    });
-    const res = await createToolHandler(toolNamed("delegate"), cfg, delegator)({ prompt: "x" });
+    const { handler, agy } = handlerFor(
+      "delegate",
+      { defaultTimeoutSec: 0.05 },
+      fakeAgy({ neverExit: true, stdout: "partial output" }),
+    );
+    const res = await handler({ prompt: "x" });
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain("MAXIMUM RUNTIME EXCEEDED after 0.05s");
     expect(agy.runs).toHaveLength(1);
   });
 
   it("returns isError content on failure instead of throwing", async () => {
-    const cfg = testConfig;
-    const delegator = new Delegator(cfg, new ModelRegistry(async () => LISTING), undefined, {
-      spawn: () => {
-        throw new Error("kaboom");
-      },
-    });
-    const res = await createToolHandler(toolNamed("delegate"), cfg, delegator)({ prompt: "x" });
+    const { handler } = handlerFor("delegate", {}, exploding());
+    const res = await handler({ prompt: "x" });
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain("kaboom");
     expect(textOf(res)).not.toContain("Do NOT perform this work yourself");
   });
 
   it("strict mode appends the do-not-fallback instruction to errors", async () => {
-    const cfg: Config = { ...testConfig, onFailure: "strict" };
-    const delegator = new Delegator(cfg, new ModelRegistry(async () => LISTING), undefined, {
-      spawn: () => {
-        throw new Error("kaboom");
-      },
-    });
-    const res = await createToolHandler(toolNamed("delegate"), cfg, delegator)({ prompt: "x" });
+    const { handler } = handlerFor("delegate", { onFailure: "strict" }, exploding());
+    const res = await handler({ prompt: "x" });
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain("kaboom");
     expect(textOf(res)).toContain("Do NOT perform this work yourself");

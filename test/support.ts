@@ -1,6 +1,9 @@
 import { writeFileSync } from "node:fs";
 import type { Config } from "../src/config.js";
+import { Delegator } from "../src/delegation.js";
+import { ModelRegistry } from "../src/models.js";
 import type { AgyProcess, SpawnAgy } from "../src/runner.js";
+import { TOOLS, type ToolDef } from "../src/tools.js";
 
 /** A real 429 line as agy writes it to its --log-file. */
 export const LOG_429 =
@@ -29,7 +32,8 @@ export interface FakeAgy {
   modelOf(run: string[]): string | undefined;
 }
 
-function valueOf(args: string[], flag: string): string | undefined {
+/** The value agy was passed for `flag`, e.g. `valueOf(run, "--model")`. */
+export function valueOf(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
   return i === -1 ? undefined : args[i + 1];
 }
@@ -87,3 +91,30 @@ export const LISTING =
   "Gemini 3.7 Flash (High)\n" +
   "Gemini 3.5 Flash (High)\n" +
   "Gemini 3.1 Pro (High)\n";
+
+/** The tool definition under test, by name. */
+export const toolNamed = (name: string): ToolDef => TOOLS.find((t) => t.name === name)!;
+
+export interface DelegatorOptions {
+  /** The fake agy to run; omit for a delegator that never spawns successfully. */
+  spawn?: SpawnAgy;
+  cfg?: Partial<Config>;
+  /** Raw contents of the sessions cache file. */
+  sessions?: string;
+  /** Stands in for `agy models`; throw from here to test a degraded resolution. */
+  listing?: () => Promise<string>;
+}
+
+/** A Delegator wired to fakes, plus the config it was built with. */
+export function makeDelegator(opts: DelegatorOptions = {}): {
+  cfg: Config;
+  delegator: Delegator;
+} {
+  const cfg: Config = { ...testConfig, ...opts.cfg };
+  const delegator = new Delegator(cfg, new ModelRegistry(opts.listing ?? (async () => LISTING)), {
+    spawn: opts.spawn,
+    timing: FAST_TIMING,
+    readSessions: async () => opts.sessions ?? "{}",
+  });
+  return { cfg, delegator };
+}

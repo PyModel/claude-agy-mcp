@@ -18,7 +18,7 @@ export interface DelegationRequest {
   signal?: AbortSignal;
 }
 
-/** What one delegation produced, as data — nothing here is formatted for display. */
+/** What one delegation produced. `attempts` carries the only pre-rendered strings. */
 export interface Delegation {
   output: string;
   /** The model that answered; undefined when agy chose for itself. */
@@ -41,10 +41,12 @@ export interface DelegationDeps extends RunnerDeps {
  * state that makes a failover on one call cheap on the next.
  */
 export class Delegator {
+  /** Survives across calls, so one failover makes the next call cheap. */
+  private readonly cooldowns = new CooldownRegistry();
+
   constructor(
     private readonly cfg: Config,
     private readonly models: ModelRegistry,
-    private readonly cooldowns: CooldownRegistry = new CooldownRegistry(),
     private readonly deps: DelegationDeps = {},
   ) {}
 
@@ -78,7 +80,7 @@ export class Delegator {
             signal: req.signal,
           },
           this.cfg,
-          this.deps,
+          { spawn: this.deps.spawn, timing: this.deps.timing },
         );
         return {
           output: result.output,

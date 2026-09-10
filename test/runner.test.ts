@@ -2,18 +2,9 @@ import { describe, it, expect } from "vitest";
 import { buildArgs, truncate, runAgy } from "../src/runner.js";
 import { QuotaError } from "../src/quota.js";
 import type { Config } from "../src/config.js";
-import { fakeAgy, FAST_TIMING, LOG_429 } from "./support.js";
+import { fakeAgy, FAST_TIMING, LOG_429, testConfig, valueOf } from "./support.js";
 
-const cfg: Config = {
-  agyPath: "agy",
-  defaultTimeoutSec: 3600,
-  perToolTimeouts: {},
-  maxOutputChars: 100,
-  defaultModel: undefined,
-  skipPermissions: true,
-  sandbox: false,
-  onFailure: "fallback",
-};
+const cfg: Config = { ...testConfig, maxOutputChars: 100 };
 
 describe("buildArgs", () => {
   it("passes the resolved runtime ceiling to agy", () => {
@@ -62,13 +53,12 @@ describe("buildArgs", () => {
 
 describe("truncate", () => {
   it("passes short output through", () => {
-    expect(truncate("short", 100)).toEqual({ text: "short", truncated: false });
+    expect(truncate("short", 100)).toBe("short");
   });
-  it("cuts long output with a notice", () => {
-    const r = truncate("x".repeat(150), 100);
-    expect(r.truncated).toBe(true);
-    expect(r.text).toContain("x".repeat(100));
-    expect(r.text).toMatch(/truncated at 100.*150/s);
+  it("cuts long output and states the cut in the text", () => {
+    const text = truncate("x".repeat(150), 100);
+    expect(text).toContain("x".repeat(100));
+    expect(text).toMatch(/truncated at 100.*150/s);
   });
 });
 
@@ -156,7 +146,7 @@ describe("runAgy", () => {
   it("removes its run log when the run finishes", async () => {
     const agy = fakeAgy({ stdout: "answer" });
     await run({ prompt: "q", cwd: "/repo", timeoutSec: 600 }, agy);
-    const logPath = agy.runs[0][agy.runs[0].indexOf("--log-file") + 1];
+    const logPath = valueOf(agy.runs[0], "--log-file")!;
     expect(logPath).toMatch(/claude-agy-mcp-\d+-/);
     const { existsSync } = await import("node:fs");
     expect(existsSync(logPath)).toBe(false);

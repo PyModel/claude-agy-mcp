@@ -1,35 +1,21 @@
 import { describe, it, expect } from "vitest";
-import { Delegator } from "../src/delegation.js";
-import { ModelRegistry } from "../src/models.js";
-import { CooldownRegistry } from "../src/quota.js";
-import { TOOLS } from "../src/tools.js";
 import type { Config } from "../src/config.js";
-import { fakeAgy, FAST_TIMING, LISTING, LOG_429, testConfig } from "./support.js";
+import { fakeAgy, LOG_429, makeDelegator, toolNamed, valueOf } from "./support.js";
 
-const toolNamed = (name: string) => TOOLS.find((t) => t.name === name)!;
+const SESSIONS = '{"/repo":"sess-1"}';
 
 /** An agy that hits a 429 for `quotaModels` and stalls forever for `stallModels`. */
 function agyWhere(quotaModels: string[] = [], stallModels: string[] = []) {
   return fakeAgy((args) => {
-    const i = args.indexOf("--model");
-    const model = i === -1 ? undefined : args[i + 1];
+    const model = valueOf(args, "--model");
     if (model && quotaModels.includes(model)) return { log: LOG_429, stdout: "", exitCode: 0 };
     if (model && stallModels.includes(model)) return { neverExit: true, stdout: "partial output" };
     return { stdout: "the answer" };
   });
 }
 
-function delegatorFor(
-  agy: ReturnType<typeof fakeAgy>,
-  overrides: Partial<Config> = {},
-  cooldowns = new CooldownRegistry(),
-) {
-  return new Delegator(
-    { ...testConfig, ...overrides },
-    new ModelRegistry(async () => LISTING),
-    cooldowns,
-    { spawn: agy.spawn, timing: FAST_TIMING, readSessions: async () => '{"/repo":"sess-1"}' },
-  );
+function delegatorFor(agy: ReturnType<typeof fakeAgy>, cfg: Partial<Config> = {}) {
+  return makeDelegator({ spawn: agy.spawn, cfg, sessions: SESSIONS }).delegator;
 }
 
 const request = (tool: string, args: Record<string, unknown>) => ({
@@ -89,14 +75,10 @@ describe("Delegator", () => {
 
   it("reports a degraded resolution as a note", async () => {
     const agy = agyWhere();
-    const delegator = new Delegator(
-      testConfig,
-      new ModelRegistry(async () => {
-        throw new Error("agy models failed");
-      }),
-      new CooldownRegistry(),
-      { spawn: agy.spawn, timing: FAST_TIMING, readSessions: async () => "{}" },
-    );
+    const { delegator } = makeDelegator({
+      spawn: agy.spawn,
+      listing: () => Promise.reject(new Error("agy models failed")),
+    });
     const d = await delegator.run(request("delegate", { prompt: "x" }));
     expect(d.model).toBeUndefined();
     expect(d.note).toMatch(/could not list/i);
