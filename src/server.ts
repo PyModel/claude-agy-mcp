@@ -1,14 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { loadConfig, type Config } from "./config.js";
-import { ModelRegistry } from "./models.js";
-import {
-  runAgy,
-  defaultDeps,
-  execWithClosedStdin,
-  type RunnerDeps,
-  type RunResult,
-} from "./runner.js";
-import { CooldownRegistry, QuotaError } from "./quota.js";
+import { Delegator, type Delegation } from "./delegation.js";
+import { ModelRegistry, listModels } from "./models.js";
 import { ROUTING_ARGS, TOOLS, type ToolDef } from "./tools.js";
 
 /** Keep in sync with package.json — test/server.test.ts fails if they drift. */
@@ -24,82 +17,45 @@ interface HandlerExtra {
   signal?: AbortSignal;
 }
 
+/** Renders a delegation as the text an agent reads. */
+export function renderDelegation(d: Delegation, timeoutSec: number): string {
+  const meta: string[] = [`model: ${d.model ?? "agy default"}`];
+  if (d.note) meta.push(`note: ${d.note}`);
+  if (d.attempts.length) meta.push(`failover: ${d.attempts.join("; ")}`);
+  if (d.sessionId) meta.push(`session: ${d.sessionId} (use follow_up to continue)`);
+
+  const output = d.timedOut
+    ? `[claude-agy-mcp] MAXIMUM RUNTIME EXCEEDED after ${timeoutSec}s — ` +
+      "agy was killed at the resource ceiling (AGY_MAX_RUNTIME). This is not a diagnosis " +
+      "that it was stuck. Any file changes it already made are on disk. Partial output follows.\n" +
+      d.output
+    : d.output;
+
+  return `${output}\n\n---\n[claude-agy-mcp] ${meta.join(" | ")}`;
+}
+
 export function createToolHandler(
   tool: ToolDef,
   cfg: Config,
-  registry: ModelRegistry,
-  deps: RunnerDeps = defaultDeps,
-  cooldowns: CooldownRegistry = new CooldownRegistry(),
+  delegator: Delegator,
 ): (args: Record<string, unknown>, extra?: HandlerExtra) => Promise<ToolResponse> {
   return async (args, extra) => {
+    const timeoutSec =
+      cfg.perToolTimeouts[tool.name] ?? (cfg.timeoutExplicit ? cfg.timeoutSec : cfg.maxRuntimeSec);
     try {
       const routing = ROUTING_ARGS.parse(args);
-      const cwd = routing.cwd ?? process.cwd();
-      const conversationId = routing.session_id;
-      const prompt = tool.buildPrompt(args, cwd);
-      const timeoutSec =
-        cfg.perToolTimeouts[tool.name] ??
-        (cfg.timeoutExplicit ? cfg.timeoutSec : cfg.maxRuntimeSec);
-
-      const resolution = conversationId
-        ? { models: [undefined], note: undefined }
-        : await registry.resolveChain({
-            explicit: routing.model,
-            chain: tool.chain ?? [],
-            defaultModel: cfg.defaultModel,
-          });
-
-      const attempts: string[] = [];
-      let result: RunResult | undefined;
-      let used: string | undefined;
-
-      for (const model of resolution.models) {
-        if (model && cooldowns.cooling(model)) {
-          attempts.push(`${model}: quota cooldown, ${cooldowns.describe(model)} left`);
-          continue;
-        }
-        try {
-          result = await runAgy(
-            { prompt, cwd, model, conversationId, timeoutSec, signal: extra?.signal },
-            cfg,
-            deps,
-          );
-          used = model;
-          break;
-        } catch (err) {
-          if (err instanceof QuotaError && model) {
-            cooldowns.set(model, err.resetSeconds);
-            attempts.push(
-              `${model}: quota exhausted${err.resetText ? ` (resets in ${err.resetText})` : ""}`,
-            );
-            continue;
-          }
-          throw err;
-        }
-      }
-
-      if (!result) {
-        throw new Error(
-          `All candidate models are quota-exhausted or cooling down:\n` +
-            `${attempts.map((a) => `- ${a}`).join("\n")}\n` +
-            `Retry after the quota resets, or pass an explicit \`model\`.`,
-        );
-      }
-
-      const meta: string[] = [`model: ${used ?? "agy default"}`];
-      if (resolution.note) meta.push(`note: ${resolution.note}`);
-      if (attempts.length) meta.push(`failover: ${attempts.join("; ")}`);
-      if (result.sessionId) meta.push(`session: ${result.sessionId} (use follow_up to continue)`);
-      const output = result.timedOut
-        ? `[claude-agy-mcp] MAXIMUM RUNTIME EXCEEDED after ${timeoutSec}s — ` +
-          "agy was killed at the resource ceiling (AGY_MAX_RUNTIME). This is not a diagnosis " +
-          "that it was stuck. Any file changes it already made are on disk. Partial output follows.\n" +
-          result.output
-        : result.output;
-
+      const delegation = await delegator.run({
+        tool,
+        args,
+        cwd: routing.cwd ?? process.cwd(),
+        conversationId: routing.session_id,
+        model: routing.model,
+        timeoutSec,
+        signal: extra?.signal,
+      });
       return {
-        content: [{ type: "text", text: `${output}\n\n---\n[claude-agy-mcp] ${meta.join(" | ")}` }],
-        isError: result.timedOut || undefined,
+        content: [{ type: "text", text: renderDelegation(delegation, timeoutSec) }],
+        isError: delegation.timedOut || undefined,
       };
     } catch (err) {
       let text = (err as Error).message;
@@ -108,32 +64,21 @@ export function createToolHandler(
           "\n\n[claude-agy-mcp strict mode] Delegation failed. Do NOT perform this work yourself " +
           "in the main context — report the failure to the user and let them decide how to proceed.";
       }
-      return {
-        content: [{ type: "text", text }],
-        isError: true,
-      };
+      return { content: [{ type: "text", text }], isError: true };
     }
   };
 }
 
 export function createServer(): McpServer {
   const cfg = loadConfig();
-  const registry = new ModelRegistry(async () => {
-    const { stdout } = await execWithClosedStdin(cfg.agyPath, ["models"], {
-      cwd: process.cwd(),
-      timeout: 30_000,
-      maxBuffer: 1024 * 1024,
-    });
-    return stdout;
-  });
-  const cooldowns = new CooldownRegistry();
+  const delegator = new Delegator(cfg, new ModelRegistry(() => listModels(cfg.agyPath)));
 
   const server = new McpServer({ name: "claude-agy-mcp", version: VERSION });
   for (const tool of TOOLS) {
     server.registerTool(
       tool.name,
       { description: tool.description, inputSchema: tool.schema },
-      createToolHandler(tool, cfg, registry, defaultDeps, cooldowns),
+      createToolHandler(tool, cfg, delegator),
     );
   }
   return server;
