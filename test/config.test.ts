@@ -9,10 +9,19 @@ describe("loadConfig", () => {
       defaultTimeoutSec: 3600,
       perToolTimeouts: {},
       maxOutputChars: 50_000,
-      defaultModel: "Gemini 3.7 Flash (High)",
+      defaultModel: "gemini-flash@latest-high",
+      defaultEffort: undefined,
       skipPermissions: true,
       sandbox: false,
       onFailure: "fallback",
+      maxConcurrency: 2,
+      budgetTokens: undefined,
+      allowedRoots: [],
+      redact: true,
+      maxDelegationDepth: 1,
+      warmSessions: true,
+      warmMax: 2,
+      warmIdleSec: 300,
     });
   });
 

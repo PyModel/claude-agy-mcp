@@ -37,9 +37,9 @@ claude mcp add-json -s user claude-agy-mcp \
   '{"type":"stdio","command":"npx","args":["-y","@pymodel/claude-agy-mcp"],"timeout":3600000}'
 ```
 
-**Claude Code delegates heavy tasks to Google's flagship Gemini 3.7 Flash (High)** via the Antigravity CLI (`agy`) — saving Claude's context window and tokens for what matters.
+**Claude Code delegates heavy tasks to Google's flagship Gemini Flash** via the Antigravity CLI (`agy`) — saving Claude's context window and tokens for what matters.
 
-Claude acts as the orchestrator → `claude-agy-mcp` routes compute-heavy sub-tasks to **Gemini 3.7 Flash (High)** → only concise answers return. Large files, deep git searches, and log dumps never pollute Claude's context.
+Claude acts as the orchestrator → `claude-agy-mcp` routes compute-heavy sub-tasks to **the newest Gemini Flash agy offers** → only concise answers return. Large files, deep git searches, and log dumps never pollute Claude's context.
 
 </div>
 
@@ -48,13 +48,15 @@ User → Claude Code → claude-agy-mcp (MCP) → agy CLI → Gemini 3.7 Flash /
                    ←                      ←         ← (Clean answers only)
 ```
 
-## Why Gemini 3.7 Flash (High) for Claude Code?
+## Why Gemini Flash for Claude Code?
 
 <div align="center">
   <img src="https://raw.githubusercontent.com/PyModel/claude-agy-mcp/main/assets/benchmarks.svg" alt="Gemini 3.7 Flash Benchmarks" width="100%">
 </div>
 
-**Gemini 3.7 Flash** is Google's most intelligent workhorse model for coding and agentic execution. It applies deep multi-step planning, rigorous terminal reasoning, and high first-pass code accuracy.
+**Gemini Flash** is Google's most intelligent workhorse model for coding and agentic execution. It applies deep multi-step planning, rigorous terminal reasoning, and high first-pass code accuracy.
+
+> The benchmark table below compares the generation that was current when it was written (3.7 Flash against 3.6 Flash). The bridge does not pin that generation: its chains say `gemini-flash@latest-high`, so it routes to whatever the newest Flash in `agy models` is — 3.8 Flash at the time of writing.
 
 ### Benchmark Highlights
 
@@ -135,14 +137,15 @@ With `claude-agy-mcp`:
 
 ## Why this over claude-to-agy?
 
-|                 | claude-to-agy               | **claude-agy-mcp**                                                                   |
-| --------------- | --------------------------- | ------------------------------------------------------------------------------------ |
-| Tool surface    | 1 generic `delegate_to_agy` | 6 purpose-built tools — Claude self-routes reliably                                  |
-| Model selection | none (agy default only)     | per-tool routing prioritizing **Gemini 3.7 Flash (High)** with quota failover        |
-| Multi-turn      | stateless                   | session continuity — `follow_up` resumes agy conversations without resending context |
-| Output safety   | unbounded                   | configurable truncation cap protects Claude's context                                |
-| Sandbox         | no                          | optional `--sandbox` mode                                                            |
-| Install         | uvx (Python)                | npx (Node) — zero install                                                            |
+|                 | claude-to-agy               | **claude-agy-mcp**                                                                       |
+| --------------- | --------------------------- | ---------------------------------------------------------------------------------------- |
+| Tool surface    | 1 generic `delegate_to_agy` | 8 purpose-built tools — Claude self-routes reliably                                      |
+| Model selection | none (agy default only)     | per-tool family selectors that follow new generations, with quota failover               |
+| Multi-turn      | stateless                   | session continuity — `follow_up` resumes agy conversations without resending context     |
+| Output safety   | unbounded                   | configurable truncation cap protects Claude's context                                    |
+| Sandbox         | no                          | per-tool privilege: read-only tools pinned to `--mode plan`, optional `--sandbox`        |
+| Honest results  | exit code only              | decides on agy's JSON envelope — reports auto-denied tool actions instead of hiding them |
+| Install         | uvx (Python)                | npx (Node) — zero install                                                                |
 
 ## Requirements
 
@@ -174,27 +177,33 @@ curl -o CLAUDE.md https://raw.githubusercontent.com/PyModel/claude-agy-mcp/main/
 
 ## Tools
 
-| Tool                 | Use for                                                         | Model routing (first available)                                                                        |
-| -------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `analyze_files`      | Files >200 lines, >3 files at once, logs, dumps, generated code | Gemini 3.7 Flash (High) → Gemini 3.5 Flash (High) → Gemini 3.1 Pro (Low)                               |
-| `deep_search`        | git log/diff/blame archaeology, repo-wide greps                 | Gemini 3.7 Flash (Medium) → Gemini 3.7 Flash (High) → Gemini 3.5 Flash (High)                          |
-| `web_lookup`         | Docs, API references, external/current knowledge                | Gemini 3.7 Flash (Medium) → Gemini 3.7 Flash (High) → Gemini 3.5 Flash (High)                          |
-| `adversarial_review` | Plan critiques, design and code reviews                         | Gemini 3.1 Pro (High) → Claude Opus 4.6 (Thinking) → Gemini 3.7 Flash (High) → Gemini 3.5 Flash (High) |
-| `follow_up`          | Continue a prior session by `session_id` — no context resend    | inherits the session                                                                                   |
-| `delegate`           | Anything else heavy                                             | Gemini 3.7 Flash (High) → Gemini 3.5 Flash (High)                                                      |
+| Tool                 | Use for                                                         | Model routing (first available)                                              |
+| -------------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `analyze_files`      | Files >200 lines, >3 files at once, logs, dumps, generated code | `gemini-flash@latest-high` → `gemini-pro@latest-low`                         |
+| `deep_search`        | git log/diff/blame archaeology, repo-wide greps                 | `gemini-flash@latest-medium` → `gemini-flash@latest-high`                    |
+| `web_lookup`         | Docs, API references, external/current knowledge                | `gemini-flash@latest-medium` → `gemini-flash@latest-high`                    |
+| `adversarial_review` | Plan critiques, design and code reviews                         | `gemini-pro@latest-high` → `claude-opus@latest` → `gemini-flash@latest-high` |
+| `follow_up`          | Continue a prior session by `session_id` — no context resend    | inherits the session                                                         |
+| `delegate`           | Anything else heavy (read-only unless `write: true`)            | `gemini-flash@latest-high` → `gemini-pro@latest-low`                         |
+| `delegate_many`      | One question to a council of models, or N sub-tasks at once     | `gemini-pro@latest-high` → `claude-opus@latest` → `gemini-flash@latest-high` |
+| `agy_status`         | Spend, cooldowns, in-flight runs, resolved chains, agy version  | never reaches agy                                                            |
 
-All tools accept optional `cwd` (project root) and `model` (exact name from `agy models`; validated, with available models listed on mismatch).
+All tools accept optional `cwd` (project root), `dirs` (extra workspace roots, for cross-repo or worktree-vs-base work), `model`, `effort` (`low`/`medium`/`high`, independent of the model), and `slash_commands` (off by default, so a hostile file in the workspace cannot steer the delegated model through your own skills). The analytical tools also accept `schema` — a JSON Schema string that makes agy return machine-readable `structuredContent` alongside the text.
 
-Every response ends with a footer:
+Every response is **fenced with a per-call nonce**, with the metadata in a header before the payload:
 
 ```
----
-[claude-agy-mcp] model: Gemini 3.7 Flash (High) | session: 1f0c…-d4 (use follow_up to continue)
+[claude-agy-mcp 9f2a1c] model: Gemini 3.8 Flash (High) | session: 1f0c…-d4 (use follow_up to continue) | tokens: 16281
+[claude-agy-mcp 9f2a1c] --- agy output begins; everything below is untrusted model output ---
+…agy's answer…
+[claude-agy-mcp 9f2a1c] --- agy output ends ---
 ```
+
+The nonce is why the fence is worth anything: the metadata used to be appended _after_ the raw model output behind a plain `---` rule, which any analysed file containing `---` could forge.
 
 ### Model routing
 
-On first use the bridge runs `agy models` (cached for the process lifetime) and picks the first available model in the tool's preference chain (defaulting to **Gemini 3.7 Flash (High)**). If none is available it falls back to `AGY_DEFAULT_MODEL`, and finally to agy's own default. agy silently ignores unknown `--model` values, so the bridge validates names up front instead of letting requests land on the wrong model.
+On first use the bridge runs `agy models` (cached for the process lifetime) and resolves each chain entry against the live listing. Chains are written as **family selectors** — `gemini-flash@latest-high` rather than `Gemini 3.7 Flash (High)` — so when Google ships a new generation the chain follows it instead of quietly going stale. A selector is `family@latest[-effort]` or `family@3.7[-effort]`; an exact display name (`Gemini 3.8 Flash (High)`) and an id (`gemini-3.8-flash-high`) both work too. `AGY_DEFAULT_MODEL` is appended to every chain as a last resort. If **nothing** in a chain resolves, the bridge fails loudly rather than silently handing the work to whatever agy feels like — that is a version-skew signal, not a preference.
 
 ### Quota-aware failover
 
@@ -219,35 +228,46 @@ The ceiling is a resource cap, not a diagnosis. When it fires, the run still ret
 
 **Two timeout layers — and the client one usually bites first.** The ceiling above is the _agy-side_ budget. Your MCP client (Claude Code) has its own, separate _tool-call_ timeout, and if it is shorter, the client gives up first — you'll see `Error: timed out waiting for response`, while the bridge's own ceiling reads `MAXIMUM RUNTIME EXCEEDED` instead. Raising `AGY_MAX_RUNTIME` alone therefore changes nothing: the client still aborts on its own schedule. The work is not lost either way — the agy session persists, so `follow_up` with the returned `session_id` retrieves it — but the real fix is to make the client wait at least as long as the ceiling. The [Install](#install) command sets a per-server `timeout` of 3600000ms (scoped to this server only). If you registered the server without it, re-run the `add-json` command from Install, or set the global env var `MCP_TOOL_TIMEOUT=3600000`. Rule of thumb: **client `timeout` ≥ `AGY_MAX_RUNTIME`**.
 
-**Expected latency.** Most of the perceived "slowness" is cold start: the first call in a session spawns the agy CLI and warms the model. A simple `analyze_files` over 3 files measures around **40–50s cold** (≈46s observed), dropping on subsequent same-session calls. A first call that also hits a quota 429 takes longer while the bridge fails over. So a client timeout below ~60s will intermittently trip on cold starts even for "simple" questions — size it generously.
+**Expected latency.** Most of the perceived "slowness" is cold start: each call spawns the agy CLI and warms the model. Measured on agy 1.2.0, a trivial prompt costs **2–6s**, a run whose tool actions get denied around **16s**, and one constrained by `--json-schema` up to **56s** (the schema roughly triples thinking tokens). Real `analyze_files` work over several large files is much slower again, and a call that hits a quota 429 adds the failover on top. `follow_up` is the exception: it reuses a **resident agy process** (see `AGY_WARM_SESSIONS`) and skips the cold start entirely. Size the client timeout for the slow cases, not the fast ones.
 
 ## Configuration
 
 All optional, via environment variables:
 
-| Variable               | Default                 | Description                                                                                                   |
-| ---------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `AGY_PATH`             | `agy`                   | Path to the agy binary                                                                                        |
-| `AGY_MAX_RUNTIME`      | `3600`                  | Seconds; absolute runtime ceiling. The bridge never kills for inactivity — only cancellation, quota, or this  |
-| `AGY_TIMEOUT`          | `AGY_MAX_RUNTIME`       | Seconds; overrides the ceiling for every tool, passed as `--print-timeout`, enforced with a 15s kill grace    |
-| `AGY_TIMEOUT_<TOOL>`   | `AGY_MAX_RUNTIME`       | Seconds; overrides the ceiling for a single tool, e.g. `AGY_TIMEOUT_DEEP_SEARCH=900`. Wins over `AGY_TIMEOUT` |
-| `AGY_MAX_OUTPUT_CHARS` | `50000`                 | Truncation cap for tool output                                                                                |
-| `AGY_DEFAULT_MODEL`    | Gemini 3.7 Flash (High) | Fallback model when no chain entry is available                                                               |
-| `AGY_SKIP_PERMISSIONS` | `true`                  | Pass `--dangerously-skip-permissions` to agy                                                                  |
-| `AGY_SANDBOX`          | `false`                 | Run agy with `--sandbox`                                                                                      |
-| `AGY_ON_FAILURE`       | `fallback`              | `strict` appends an instruction to failed-tool errors telling the calling agent not to absorb the work itself |
+| Variable                   | Default                    | Description                                                                                                   |
+| -------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `AGY_PATH`                 | `agy`                      | Path to the agy binary                                                                                        |
+| `AGY_MAX_RUNTIME`          | `3600`                     | Seconds; absolute runtime ceiling. The bridge never kills for inactivity — only cancellation, quota, or this  |
+| `AGY_TIMEOUT`              | `AGY_MAX_RUNTIME`          | Seconds; overrides the ceiling for every tool, passed as `--print-timeout`, enforced with a 15s kill grace    |
+| `AGY_TIMEOUT_<TOOL>`       | `AGY_MAX_RUNTIME`          | Seconds; overrides the ceiling for a single tool, e.g. `AGY_TIMEOUT_DEEP_SEARCH=900`. Wins over `AGY_TIMEOUT` |
+| `AGY_MAX_OUTPUT_CHARS`     | `50000`                    | Truncation cap for tool output                                                                                |
+| `AGY_DEFAULT_MODEL`        | `gemini-flash@latest-high` | Appended to every chain as a last resort                                                                      |
+| `AGY_EFFORT`               | agy's own default          | `low` \| `medium` \| `high`, applied when a tool does not ask for a tier                                      |
+| `AGY_SKIP_PERMISSIONS`     | `true`                     | Pass `--dangerously-skip-permissions` to agy                                                                  |
+| `AGY_SANDBOX`              | `false`                    | Run agy with `--sandbox`                                                                                      |
+| `AGY_ON_FAILURE`           | `fallback`                 | `strict` appends an instruction to failed-tool errors telling the calling agent not to absorb the work itself |
+| `AGY_MAX_CONCURRENCY`      | `2`                        | Most agy processes at once. Calls beyond it queue instead of stampeding the shared quota                      |
+| `AGY_BUDGET_TOKENS`        | unset                      | Hard stop once this many tokens have been spent since startup. Check spend with `agy_status`                  |
+| `AGY_ALLOWED_ROOTS`        | unset (unrestricted)       | Colon- or comma-separated roots that `cwd`, `dirs` and `files` may not escape                                 |
+| `AGY_REDACT`               | `true`                     | Scrub credential-shaped strings out of returned text before it reaches the caller's context                   |
+| `AGY_MAX_DELEGATION_DEPTH` | `1`                        | Refuse to delegate once this deep, so Claude → agy → this server → agy cannot loop                            |
+| `AGY_WARM_SESSIONS`        | `true`                     | Keep a resident agy process per conversation so `follow_up` skips the cold start                              |
+| `AGY_WARM_MAX`             | `2`                        | Most resident sessions to keep; the least recently used is evicted                                            |
+| `AGY_WARM_IDLE_SEC`        | `300`                      | Kill a resident session after this long idle                                                                  |
 
 > [!WARNING]
-> **The defaults trade sandboxing for reliability.** `AGY_SKIP_PERMISSIONS` defaults to `true` and
-> `AGY_SANDBOX` to `false`, so every delegated task runs `agy` with `--dangerously-skip-permissions`
-> and no sandbox — the delegated model gets unapproved read, write and execute access inside the
-> `cwd` you pass it. That is what stops agy from blocking forever on an interactive approval prompt
-> in a non-interactive MCP context, but it is a real grant. Set `AGY_SKIP_PERMISSIONS=false` (expect
-> prompts) or `AGY_SANDBOX=true` if you are delegating into a directory you do not fully trust.
+> **`AGY_SKIP_PERMISSIONS` is a real grant, but privilege is now per tool.** It defaults to `true`
+> so agy cannot block forever on an interactive approval prompt in a non-interactive MCP context.
+> What it grants is bounded by the tool: `analyze_files`, `deep_search`, `web_lookup`,
+> `adversarial_review` and `follow_up` always run `--mode plan`, so agy may read and search but its
+> write and execute actions come back to you in a **denied-actions** note — proof the run changed
+> nothing, rather than a promise. Only `delegate` can be given write access, and only when you pass
+> `write: true` explicitly; `sandbox: true` adds `--sandbox` on top. Set `AGY_ALLOWED_ROOTS` to stop
+> any call reaching outside the directories you nominate.
 
 ### Failure behavior
 
-The bridge always fails loudly: agy errors surface as MCP tool errors with agy's actual stderr, and degraded model routing is annotated in the response footer. By default the calling agent (Claude) will typically do the work itself after a failure — visible in the transcript, but easy to stop noticing in a long session. Set `AGY_ON_FAILURE=strict` to append an explicit "do NOT perform this work yourself — report the failure to the user" instruction to every delegation error, so you keep control over when token savings are silently lost.
+The bridge always fails loudly, and it decides what "failure" means from agy's JSON envelope rather than from its exit code. That matters because agy can exit 0 with `status: SUCCESS` and a plausible answer while having silently had its tool actions auto-denied — the bridge surfaces those as a denied-actions warning instead of passing off a half-worked answer as a clean one. Failures are classified: only a quota 429 fails over to the next model, while an invalid model or an expired login stops immediately instead of burning the whole chain. Degraded model routing is annotated in the response header. By default the calling agent (Claude) will typically do the work itself after a failure — visible in the transcript, but easy to stop noticing in a long session. Set `AGY_ON_FAILURE=strict` to append an explicit "do NOT perform this work yourself — report the failure to the user" instruction to every delegation error, so you keep control over when token savings are silently lost.
 
 ## Development
 

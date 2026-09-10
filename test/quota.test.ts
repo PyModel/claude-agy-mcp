@@ -5,6 +5,7 @@ import {
   detectQuota,
   QuotaError,
   CooldownRegistry,
+  MemoryCooldownStore,
   DEFAULT_COOLDOWN_SEC,
 } from "../src/quota.js";
 
@@ -68,7 +69,7 @@ describe("QuotaError", () => {
 describe("CooldownRegistry", () => {
   it("marks a model as cooling until its reset time", () => {
     let now = 1_000_000;
-    const reg = new CooldownRegistry(() => now);
+    const reg = new CooldownRegistry(new MemoryCooldownStore(), () => now);
     reg.set("ModelA", 60);
     expect(reg.cooling("ModelA")).toBe(true);
     expect(reg.cooling("ModelB")).toBe(false);
@@ -78,7 +79,7 @@ describe("CooldownRegistry", () => {
 
   it("falls back to a default cooldown when reset time is unknown", () => {
     let now = 0;
-    const reg = new CooldownRegistry(() => now);
+    const reg = new CooldownRegistry(new MemoryCooldownStore(), () => now);
     reg.set("ModelA", undefined);
     now = (DEFAULT_COOLDOWN_SEC - 1) * 1000;
     expect(reg.cooling("ModelA")).toBe(true);
@@ -87,7 +88,7 @@ describe("CooldownRegistry", () => {
   });
 
   it("describes remaining cooldown", () => {
-    const reg = new CooldownRegistry(() => 0);
+    const reg = new CooldownRegistry(new MemoryCooldownStore(), () => 0);
     reg.set("ModelA", 3661);
     expect(reg.describe("ModelA")).toBe("1h1m1s");
   });

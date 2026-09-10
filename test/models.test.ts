@@ -2,117 +2,145 @@ import { describe, it, expect } from "vitest";
 import { writeFileSync, chmodSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { parseModels, ModelRegistry, listModels } from "../src/models.js";
+import {
+  parseListing,
+  describeModel,
+  resolveEntry,
+  ModelRegistry,
+  ModelSkewError,
+  listModels,
+} from "../src/models.js";
+import { LISTING } from "./support.js";
 
-const LISTING = `Gemini 3.5 Flash (Medium)
-Gemini 3.7 Flash (High)
-Gemini 3.5 Flash (High)
-Gemini 3.1 Pro (High)
-`;
-
-describe("parseModels", () => {
-  it("returns one trimmed model per non-empty line", () => {
-    expect(parseModels(LISTING)).toEqual([
-      "Gemini 3.5 Flash (Medium)",
-      "Gemini 3.7 Flash (High)",
-      "Gemini 3.5 Flash (High)",
-      "Gemini 3.1 Pro (High)",
+describe("parseListing", () => {
+  it("returns one row per tab-separated line, keeping id and display name apart", () => {
+    expect(parseListing("gemini-3.7-flash-high\tGemini 3.7 Flash (High)\n")).toEqual([
+      {
+        id: "gemini-3.7-flash-high",
+        name: "Gemini 3.7 Flash (High)",
+        family: "gemini-flash",
+        version: [3, 7],
+        effort: "high",
+      },
     ]);
   });
 
-  it("returns both the id and the display name from tab-separated listings", () => {
-    const raw =
-      "gemini-3.7-flash-high\tGemini 3.7 Flash (High)\n" +
-      "gemini-3.1-pro-low\tGemini 3.1 Pro (Low)\n";
-    expect(parseModels(raw)).toEqual([
-      "gemini-3.7-flash-high",
-      "Gemini 3.7 Flash (High)",
-      "gemini-3.1-pro-low",
-      "Gemini 3.1 Pro (Low)",
-    ]);
+  it("drops the 'Fetching available models...' progress line agy prints first", () => {
+    const raw = "Fetching available models...\ngemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n";
+    expect(parseListing(raw).map((m) => m.name)).toEqual(["Gemini 3.8 Flash (Low)"]);
   });
 
   it("strips a trailing ' (current)' marker", () => {
-    expect(parseModels("Claude Opus 4.6 (Thinking) (current)\n")).toEqual([
-      "Claude Opus 4.6 (Thinking)",
-    ]);
+    const raw = "claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking) (current)\n";
+    expect(parseListing(raw)[0]!.name).toBe("Claude Opus 4.6 (Thinking)");
   });
 });
 
-describe("ModelRegistry.resolve", () => {
+describe("describeModel", () => {
+  it("splits a versioned name into family, version and effort", () => {
+    expect(describeModel("x", "Gemini 3.1 Pro (High)")).toMatchObject({
+      family: "gemini-pro",
+      version: [3, 1],
+      effort: "high",
+    });
+  });
+
+  it("keeps a size token in the family when it is not a version", () => {
+    expect(describeModel("x", "GPT-OSS 120B (Medium)")).toMatchObject({
+      family: "gpt-oss-120b",
+      version: [],
+      effort: "medium",
+    });
+  });
+});
+
+describe("resolveEntry", () => {
+  const available = parseListing(LISTING);
+
+  it("accepts an exact display name", () => {
+    expect(resolveEntry("Gemini 3.1 Pro (High)", available)).toBe("Gemini 3.1 Pro (High)");
+  });
+
+  it("accepts an id and returns the display name", () => {
+    expect(resolveEntry("gemini-3.7-flash-high", available)).toBe("Gemini 3.7 Flash (High)");
+  });
+
+  it("resolves a family selector to the newest version at that effort", () => {
+    expect(resolveEntry("gemini-flash@latest-high", available)).toBe("Gemini 3.8 Flash (High)");
+  });
+
+  it("resolves a pinned version selector", () => {
+    expect(resolveEntry("gemini-flash@3.7-medium", available)).toBe("Gemini 3.7 Flash (Medium)");
+  });
+
+  it("returns undefined for a family that is not offered", () => {
+    expect(resolveEntry("llama@latest", available)).toBeUndefined();
+  });
+});
+
+describe("ModelRegistry.resolveChain", () => {
   const registry = (out: string | Error) =>
     new ModelRegistry(async () => {
       if (out instanceof Error) throw out;
       return out;
     });
 
-  it("uses explicit model when available", async () => {
-    const r = await registry(LISTING).resolve({ explicit: "Gemini 3.1 Pro (High)", chain: [] });
-    expect(r.model).toBe("Gemini 3.1 Pro (High)");
-  });
-
-  it("throws on explicit model not available, listing options", async () => {
-    await expect(registry(LISTING).resolve({ explicit: "Nope", chain: [] })).rejects.toThrow(
-      /Gemini 3.5 Flash \(Medium\)/,
-    );
-  });
-
-  it("picks first available model in chain", async () => {
-    const r = await registry(LISTING).resolve({
-      chain: ["Gemini 9.9 Ultra", "Gemini 3.7 Flash (High)"],
-    });
-    expect(r.model).toBe("Gemini 3.7 Flash (High)");
-  });
-
-  it("falls back to defaultModel when chain misses", async () => {
-    const r = await registry(LISTING).resolve({
-      chain: ["Gemini 9.9 Ultra"],
-      defaultModel: "Gemini 3.5 Flash (Medium)",
-    });
-    expect(r.model).toBe("Gemini 3.5 Flash (Medium)");
-  });
-
-  it("returns undefined model when nothing matches", async () => {
-    const r = await registry(LISTING).resolve({ chain: ["X"], defaultModel: "Y" });
-    expect(r.model).toBeUndefined();
-  });
-
-  it("degrades when agy models fails: explicit passes through, chain yields undefined + note", async () => {
-    const reg = registry(new Error("boom"));
-    const a = await reg.resolve({ explicit: "Whatever", chain: [] });
-    expect(a.model).toBe("Whatever");
-    const b = await reg.resolve({ chain: ["Gemini 3.7 Flash (High)"] });
-    expect(b.model).toBeUndefined();
-    expect(b.note).toMatch(/could not list/i);
-  });
-
-  it("resolveChain returns every available chain model in order, then defaultModel", async () => {
+  it("returns every resolvable chain entry in order, then defaultModel", async () => {
     const r = await registry(LISTING).resolveChain({
-      chain: ["Gemini 9.9 Ultra", "Gemini 3.5 Flash (Medium)", "Gemini 3.5 Flash (High)"],
-      defaultModel: "Gemini 3.1 Pro (High)",
+      chain: ["Gemini 9.9 Ultra", "gemini-flash@latest-medium", "Gemini 3.1 Pro (High)"],
+      defaultModel: "Gemini 3.7 Flash (High)",
     });
     expect(r.models).toEqual([
-      "Gemini 3.5 Flash (Medium)",
-      "Gemini 3.5 Flash (High)",
+      "Gemini 3.8 Flash (Medium)",
       "Gemini 3.1 Pro (High)",
+      "Gemini 3.7 Flash (High)",
     ]);
   });
 
-  it("resolveChain with explicit model returns just that model", async () => {
+  it("does not repeat a model that the chain and the default both name", async () => {
+    const r = await registry(LISTING).resolveChain({
+      chain: ["gemini-flash@latest-high"],
+      defaultModel: "Gemini 3.8 Flash (High)",
+    });
+    expect(r.models).toEqual(["Gemini 3.8 Flash (High)"]);
+  });
+
+  it("uses an explicit model when it resolves", async () => {
     const r = await registry(LISTING).resolveChain({
       explicit: "Gemini 3.1 Pro (High)",
-      chain: ["Gemini 3.5 Flash (High)"],
+      chain: ["gemini-flash@latest-high"],
     });
     expect(r.models).toEqual(["Gemini 3.1 Pro (High)"]);
   });
 
-  it("resolveChain yields [undefined] + note when nothing matches or listing fails", async () => {
-    const a = await registry(LISTING).resolveChain({ chain: ["X"], defaultModel: "Y" });
-    expect(a.models).toEqual([undefined]);
-    expect(a.note).toMatch(/no preferred model/i);
-    const b = await registry(new Error("boom")).resolveChain({ chain: ["X"] });
+  it("throws on an explicit model the listing does not offer, showing the options", async () => {
+    await expect(registry(LISTING).resolveChain({ explicit: "Nope", chain: [] })).rejects.toThrow(
+      /Gemini 3\.8 Flash \(High\)/,
+    );
+  });
+
+  it("throws ModelSkewError rather than silently using agy's default when nothing resolves", async () => {
+    await expect(
+      registry(LISTING).resolveChain({ chain: ["Gemini 9.9 Ultra"], defaultModel: "Also Gone" }),
+    ).rejects.toThrow(ModelSkewError);
+  });
+
+  it("degrades to agy's own default only when the listing itself is unreadable", async () => {
+    const reg = registry(new Error("boom"));
+    const a = await reg.resolveChain({ explicit: "Whatever", chain: [] });
+    expect(a.models).toEqual(["Whatever"]);
+    expect(a.note).toMatch(/could not list/i);
+    const b = await reg.resolveChain({ chain: ["Gemini 3.7 Flash (High)"] });
     expect(b.models).toEqual([undefined]);
     expect(b.note).toMatch(/could not list/i);
+  });
+
+  it("treats an unparseable listing as unreadable rather than as zero models", async () => {
+    const r = await registry("some new format with no tabs\n").resolveChain({
+      chain: ["Gemini 3.7 Flash (High)"],
+    });
+    expect(r.models).toEqual([undefined]);
+    expect(r.note).toMatch(/could not list/i);
   });
 
   it("fetches the listing only once under concurrent calls", async () => {
@@ -137,21 +165,12 @@ describe("ModelRegistry.resolve", () => {
       if (++calls === 1) throw new Error("transient");
       return LISTING;
     });
-    const a = await reg.resolveChain({ chain: ["Gemini 3.1 Pro (High)"] });
-    expect(a.models).toEqual([undefined]);
-    const b = await reg.resolveChain({ chain: ["Gemini 3.1 Pro (High)"] });
-    expect(b.models).toEqual(["Gemini 3.1 Pro (High)"]);
-  });
-
-  it("caches the listing across calls", async () => {
-    let calls = 0;
-    const reg = new ModelRegistry(async () => {
-      calls++;
-      return LISTING;
-    });
-    await reg.resolve({ chain: ["Gemini 3.7 Flash (High)"] });
-    await reg.resolve({ chain: ["Gemini 3.1 Pro (High)"] });
-    expect(calls).toBe(1);
+    expect((await reg.resolveChain({ chain: ["Gemini 3.1 Pro (High)"] })).models).toEqual([
+      undefined,
+    ]);
+    expect((await reg.resolveChain({ chain: ["Gemini 3.1 Pro (High)"] })).models).toEqual([
+      "Gemini 3.1 Pro (High)",
+    ]);
   });
 });
 
@@ -159,10 +178,15 @@ describe("listModels", () => {
   it("closes stdin so agy exits instead of waiting on EOF", async () => {
     // A stub that reads stdin to EOF first: it only prints if stdin was closed.
     const stub = path.join(tmpdir(), `agy-stub-${process.pid}.sh`);
-    writeFileSync(stub, '#!/bin/sh\ncat >/dev/null\necho "Gemini 3.7 Flash (High)"\n');
+    writeFileSync(
+      stub,
+      '#!/bin/sh\ncat >/dev/null\nprintf "gemini-3.7-flash-high\\tGemini 3.7 Flash (High)\\n"\n',
+    );
     chmodSync(stub, 0o755);
     try {
-      expect(parseModels(await listModels(stub))).toEqual(["Gemini 3.7 Flash (High)"]);
+      expect(parseListing(await listModels(stub)).map((m) => m.name)).toEqual([
+        "Gemini 3.7 Flash (High)",
+      ]);
     } finally {
       rmSync(stub, { force: true });
     }

@@ -5,6 +5,7 @@ import { describe, it, expect } from "vitest";
 import { runAgy } from "../src/runner.js";
 import { QuotaError } from "../src/quota.js";
 import { loadConfig } from "../src/config.js";
+import { probeCapabilities } from "../src/capabilities.js";
 
 describe.skipIf(!process.env.AGY_E2E)("live quota detection", () => {
   it(
@@ -20,6 +21,7 @@ describe.skipIf(!process.env.AGY_E2E)("live quota detection", () => {
           timeoutSec: 45,
         },
         loadConfig(),
+        await probeCapabilities(loadConfig().agyPath),
       ).catch((e) => e as Error);
 
       const elapsed = (Date.now() - started) / 1000;

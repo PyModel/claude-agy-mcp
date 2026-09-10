@@ -1,27 +1,39 @@
 import { describe, it, expect } from "vitest";
-import { buildArgs, truncate, runAgy } from "../src/runner.js";
+import { buildArgs, truncate, runAgy, assertPromptIsNotFlagLike } from "../src/runner.js";
 import { QuotaError } from "../src/quota.js";
+import { AgyFailure } from "../src/failure.js";
 import type { Config } from "../src/config.js";
-import { fakeAgy, FAST_TIMING, LOG_429, testConfig, valueOf } from "./support.js";
+import {
+  envelopeJson,
+  fakeAgy,
+  fullCaps,
+  oldCaps,
+  FAST_TIMING,
+  LOG_429,
+  testConfig,
+  valueOf,
+  valuesOf,
+} from "./support.js";
 
 const cfg: Config = { ...testConfig, maxOutputChars: 100 };
+const args = (req: Parameters<typeof buildArgs>[0], c = cfg, caps = fullCaps) =>
+  buildArgs(req, c, { logPath: "/tmp/run.log", caps, outputFormat: "json" });
 
 describe("buildArgs", () => {
-  it("passes the resolved runtime ceiling to agy", () => {
+  it("asks for the JSON envelope and locks down slash commands by default", () => {
     expect(
-      buildArgs(
-        { prompt: "hi", cwd: "/repo", model: "Gemini 3.1 Pro (High)", timeoutSec: 3600 },
-        cfg,
-        "/tmp/run.log",
-      ),
+      args({ prompt: "hi", cwd: "/repo", model: "Gemini 3.1 Pro (High)", timeoutSec: 3600 }),
     ).toEqual([
       "--dangerously-skip-permissions",
+      "--disable-slash-commands",
       "--add-dir",
       "/repo",
       "--log-file",
       "/tmp/run.log",
       "--model",
       "Gemini 3.1 Pro (High)",
+      "--output-format",
+      "json",
       "--print-timeout",
       "3600s",
       "-p",
@@ -30,57 +42,158 @@ describe("buildArgs", () => {
   });
 
   it("adds --conversation and --sandbox when set", () => {
-    const args = buildArgs(
+    const out = args(
       { prompt: "q", cwd: "/repo", conversationId: "abc-123", timeoutSec: 600 },
-      { ...cfg, sandbox: true, skipPermissions: false },
-      "/tmp/run.log",
+      {
+        ...cfg,
+        sandbox: true,
+        skipPermissions: false,
+      },
     );
-    expect(args).toEqual([
-      "--sandbox",
-      "--add-dir",
-      "/repo",
-      "--log-file",
-      "/tmp/run.log",
-      "--conversation",
-      "abc-123",
-      "--print-timeout",
-      "600s",
-      "-p",
-      "q",
-    ]);
+    expect(out).toContain("--sandbox");
+    expect(out).not.toContain("--dangerously-skip-permissions");
+    expect(valueOf(out, "--conversation")).toBe("abc-123");
+  });
+
+  it("passes mode and effort as separate flags from the model", () => {
+    const out = args({
+      prompt: "q",
+      cwd: "/repo",
+      model: "Gemini 3.8 Flash (High)",
+      mode: "plan",
+      effort: "low",
+      timeoutSec: 600,
+    });
+    expect(valueOf(out, "--mode")).toBe("plan");
+    expect(valueOf(out, "--effort")).toBe("low");
+    expect(valueOf(out, "--model")).toBe("Gemini 3.8 Flash (High)");
+  });
+
+  it("repeats --add-dir for every extra workspace root, without duplicating cwd", () => {
+    const out = args({
+      prompt: "q",
+      cwd: "/repo",
+      dirs: ["/repo", "/other", "/third"],
+      timeoutSec: 600,
+    });
+    expect(valuesOf(out, "--add-dir")).toEqual(["/repo", "/other", "/third"]);
+  });
+
+  it("keeps slash commands when the caller asks for them", () => {
+    const out = args({ prompt: "q", cwd: "/repo", slashCommands: true, timeoutSec: 600 });
+    expect(out).not.toContain("--disable-slash-commands");
+  });
+
+  it("omits every flag an older agy does not advertise", () => {
+    const out = buildArgs(
+      { prompt: "q", cwd: "/repo", mode: "plan", effort: "low", jsonSchema: "{}", timeoutSec: 600 },
+      cfg,
+      { logPath: "/tmp/run.log", caps: oldCaps },
+    );
+    for (const flag of [
+      "--mode",
+      "--effort",
+      "--json-schema",
+      "--output-format",
+      "--disable-slash-commands",
+      "--dangerously-skip-permissions",
+    ]) {
+      expect(out).not.toContain(flag);
+    }
+    expect(valueOf(out, "--print-timeout")).toBe("600s");
+  });
+});
+
+describe("assertPromptIsNotFlagLike", () => {
+  it("refuses a prompt agy's parser would read as a flag", () => {
+    expect(() => assertPromptIsNotFlagLike("--help me")).toThrow(
+      /reads? as a flag|read as a flag/i,
+    );
+    expect(() => assertPromptIsNotFlagLike("  -p sneaky")).toThrow();
+  });
+
+  it("allows an ordinary prompt", () => {
+    expect(() => assertPromptIsNotFlagLike("explain the -p flag")).not.toThrow();
   });
 });
 
 describe("truncate", () => {
-  it("passes short output through", () => {
-    expect(truncate("short", 100)).toBe("short");
+  it("passes short output through with no truncation fact", () => {
+    expect(truncate("short", 100)).toEqual({ text: "short" });
   });
-  it("cuts long output and states the cut in the text", () => {
-    const text = truncate("x".repeat(150), 100);
-    expect(text).toContain("x".repeat(100));
-    expect(text).toMatch(/truncated at 100.*150/s);
+
+  it("keeps the head and the tail, because conclusions come last", () => {
+    const text = `${"A".repeat(200)}THE CONCLUSION`;
+    const cut = truncate(text, 100);
+    expect(cut.from).toBe(text.length);
+    expect(cut.text).toContain("THE CONCLUSION");
+    expect(cut.text.startsWith("AAAA")).toBe(true);
+    expect(cut.text).toMatch(/chars omitted here/);
   });
 });
 
 describe("runAgy", () => {
-  const run = (req: Parameters<typeof runAgy>[0], agy: ReturnType<typeof fakeAgy>) =>
-    runAgy(req, cfg, { spawn: agy.spawn, timing: FAST_TIMING });
+  const run = (
+    req: Parameters<typeof runAgy>[0],
+    agy: ReturnType<typeof fakeAgy>,
+    caps = fullCaps,
+  ) => runAgy(req, cfg, caps, { spawn: agy.spawn, timing: FAST_TIMING });
 
-  it("returns the agy output", async () => {
-    const agy = fakeAgy({ stdout: "answer\n" });
-    expect((await run({ prompt: "q", cwd: "/repo", timeoutSec: 600 }, agy)).output).toBe("answer");
+  it("returns the envelope's response, not raw stdout", async () => {
+    const agy = fakeAgy({ answer: "answer\n" });
+    const r = await run({ prompt: "q", cwd: "/repo", timeoutSec: 600 }, agy);
+    expect(r.output).toBe("answer");
+    expect(r.conversationId).toBe("sess-1");
+    expect(r.usage.totalTokens).toBe(15);
+  });
+
+  it("reports denied actions from a run agy called a success", async () => {
+    const agy = fakeAgy({
+      envelope: {
+        response: "I wrote a plan instead.",
+        denied: [{ action: "command", display_name: "RunCommand" }],
+      },
+    });
+    const r = await run({ prompt: "q", cwd: "/repo", timeoutSec: 600 }, agy);
+    expect(r.deniedActions).toEqual([{ action: "command", displayName: "RunCommand" }]);
+  });
+
+  it("carries structured output through when a schema was used", async () => {
+    const agy = fakeAgy({ envelope: { response: "{}", structuredOutput: { answer: 4 } } });
+    const r = await run({ prompt: "q", cwd: "/repo", jsonSchema: "{}", timeoutSec: 600 }, agy);
+    expect(r.structuredOutput).toEqual({ answer: 4 });
+  });
+
+  it("falls back to raw stdout when agy is too old for an envelope", async () => {
+    const agy = fakeAgy({ stdout: "plain answer\n" });
+    const r = await run({ prompt: "q", cwd: "/repo", timeoutSec: 600 }, agy, oldCaps);
+    expect(r.output).toBe("plain answer");
+    expect(r.usage.totalTokens).toBe(0);
+  });
+
+  it("classifies an ERROR envelope instead of reporting exit-code noise", async () => {
+    const agy = fakeAgy({
+      envelope: { status: "ERROR", error: 'invalid model selection (--model "X")' },
+      exitCode: 1,
+    });
+    const err = (await run({ prompt: "q", cwd: "/repo", timeoutSec: 600 }, agy).catch(
+      (e) => e,
+    )) as AgyFailure;
+    expect(err).toBeInstanceOf(AgyFailure);
+    expect(err.kind).toBe("invalid_model");
+    expect(err.policy.failover).toBe(false);
   });
 
   it("kills the child and throws QuotaError when the log shows a 429", async () => {
-    const agy = fakeAgy({ neverExit: true, log: LOG_429 });
+    const agy = fakeAgy({ neverExit: true, log: `${LOG_429}\n` });
     await expect(
-      run({ prompt: "q", cwd: "/repo", model: "Gemini 3.5 Flash (Medium)", timeoutSec: 600 }, agy),
+      run({ prompt: "q", cwd: "/repo", model: "Gemini 3.7 Flash (Medium)", timeoutSec: 600 }, agy),
     ).rejects.toThrow(QuotaError);
     expect(agy.kills).toContain("SIGTERM");
   });
 
   it("includes the reset time in the QuotaError", async () => {
-    const agy = fakeAgy({ neverExit: true, log: LOG_429 });
+    const agy = fakeAgy({ neverExit: true, log: `${LOG_429}\n` });
     const err = (await run({ prompt: "q", cwd: "/repo", model: "M", timeoutSec: 600 }, agy).catch(
       (e) => e,
     )) as QuotaError;
@@ -89,7 +202,7 @@ describe("runAgy", () => {
   });
 
   it("resolves partial output when the hard deadline hits", async () => {
-    const agy = fakeAgy({ neverExit: true, stdout: "partial answer\n" });
+    const agy = fakeAgy({ neverExit: true, answer: "partial answer\n" });
     const r = await run({ prompt: "q", cwd: "/repo", timeoutSec: 0.05 }, agy);
     expect(r.output).toBe("partial answer");
     expect(r.timedOut).toBe(true);
@@ -114,17 +227,19 @@ describe("runAgy", () => {
   });
 
   it("treats empty output with a quota log as QuotaError, not success", async () => {
-    const agy = fakeAgy({ stdout: "", exitCode: 0, log: LOG_429 });
+    const agy = fakeAgy({ answer: "", exitCode: 0, log: `${LOG_429}\n` });
     await expect(
       run({ prompt: "q", cwd: "/repo", model: "M", timeoutSec: 600 }, agy),
     ).rejects.toThrow(QuotaError);
   });
 
-  it("treats empty output with a clean log as an error, not success", async () => {
-    const agy = fakeAgy({ stdout: "", exitCode: 0 });
-    await expect(run({ prompt: "q", cwd: "/repo", timeoutSec: 600 }, agy)).rejects.toThrow(
-      /empty output/i,
-    );
+  it("names the empty-response case without blaming the print-timeout", async () => {
+    const agy = fakeAgy({ answer: "", exitCode: 0 });
+    const err = (await run({ prompt: "q", cwd: "/repo", timeoutSec: 600 }, agy).catch(
+      (e) => e,
+    )) as AgyFailure;
+    expect(err.kind).toBe("empty");
+    expect(err.message).toMatch(/SUCCESS with an empty response/);
   });
 
   it("throws install guidance on ENOENT", async () => {
@@ -136,19 +251,41 @@ describe("runAgy", () => {
     );
   });
 
-  it("surfaces stderr on non-zero exit", async () => {
-    const agy = fakeAgy({ exitCode: 1, stderr: "auth expired" });
-    await expect(run({ prompt: "q", cwd: "/repo", timeoutSec: 600 }, agy)).rejects.toThrow(
-      /auth expired/,
+  it("surfaces stderr when agy died without an envelope", async () => {
+    const agy = fakeAgy({ stdout: "", exitCode: 1, stderr: "auth expired" });
+    const err = (await run({ prompt: "q", cwd: "/repo", timeoutSec: 600 }, agy).catch(
+      (e) => e,
+    )) as AgyFailure;
+    expect(err.message).toMatch(/auth expired/);
+    expect(err.kind).toBe("unauthenticated");
+  });
+
+  it("passes the delegation-depth counter into the child environment", async () => {
+    const agy = fakeAgy({ answer: "ok" });
+    await runAgy(
+      { prompt: "q", cwd: "/repo", timeoutSec: 600, env: { AGY_DELEGATION_DEPTH: "1" } },
+      cfg,
+      fullCaps,
+      {
+        spawn: agy.spawn,
+        timing: FAST_TIMING,
+      },
     );
+    expect(agy.envs[0]).toEqual({ AGY_DELEGATION_DEPTH: "1" });
   });
 
   it("removes its run log when the run finishes", async () => {
-    const agy = fakeAgy({ stdout: "answer" });
+    const agy = fakeAgy({ answer: "answer" });
     await run({ prompt: "q", cwd: "/repo", timeoutSec: 600 }, agy);
-    const logPath = valueOf(agy.runs[0], "--log-file")!;
+    const logPath = valueOf(agy.runs[0]!, "--log-file")!;
     expect(logPath).toMatch(/claude-agy-mcp-\d+-/);
     const { existsSync } = await import("node:fs");
     expect(existsSync(logPath)).toBe(false);
+  });
+
+  it("does not corrupt a UTF-8 answer that the envelope carries", async () => {
+    const agy = fakeAgy({ stdout: envelopeJson({ response: "héllo — 世界" }) });
+    const r = await run({ prompt: "q", cwd: "/repo", timeoutSec: 600 }, agy);
+    expect(r.output).toBe("héllo — 世界");
   });
 });

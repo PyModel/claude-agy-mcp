@@ -1,7 +1,13 @@
+import { randomBytes } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { CapabilityCache, probeCapabilities, type Capabilities } from "./capabilities.js";
 import { loadConfig, timeoutFor, type Config } from "./config.js";
+import { FileCooldownStore } from "./cooldown-store.js";
 import { Delegator, type Delegation } from "./delegation.js";
 import { ModelRegistry, listModels } from "./models.js";
+import { CooldownRegistry } from "./quota.js";
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import type { ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
 import { ROUTING_ARGS, TOOLS, type ToolDef } from "./tools.js";
 
 /** Keep in sync with package.json — test/server.test.ts fails if they drift. */
@@ -10,29 +16,161 @@ export const VERSION = "2.0.0";
 interface ToolResponse {
   [key: string]: unknown;
   content: { type: "text"; text: string }[];
+  structuredContent?: Record<string, unknown>;
   isError?: boolean;
 }
 
-interface HandlerExtra {
-  signal?: AbortSignal;
+/**
+ * What the SDK hands a tool handler. Every field is optional here so the handler
+ * can also be called directly from a test with just the parts it needs.
+ */
+type HandlerExtra = Partial<RequestHandlerExtra<ServerRequest, ServerNotification>>;
+
+/** A per-call fence so a delegated payload cannot forge this server's own metadata. */
+export function makeNonce(): string {
+  return randomBytes(6).toString("hex");
 }
 
-/** Renders a delegation as the text an agent reads. */
-export function renderDelegation(d: Delegation, timeoutSec: number): string {
+function deniedNote(d: Delegation): string | undefined {
+  if (d.deniedActions.length === 0) return undefined;
+  const names = [...new Set(d.deniedActions.map((a) => a.displayName || a.action))];
+  return (
+    `agy answered but ${d.deniedActions.length} tool action(s) were auto-denied ` +
+    `(${names.join(", ")}) — the answer may be incomplete. Read-only tools deny writes and ` +
+    `commands by design, so this is expected for a review; for work that must run commands, ` +
+    `use \`delegate\` with \`write: true\`.`
+  );
+}
+
+/**
+ * Renders a delegation as the text an agent reads.
+ *
+ * The metadata is fenced with a per-call nonce and placed *before* the payload.
+ * The previous format appended it after raw model output behind a `---` rule,
+ * which any analysed file containing `---` could forge.
+ */
+export function renderDelegation(d: Delegation, timeoutSec: number, nonce: string): string {
   const meta: string[] = [`model: ${d.model ?? "agy default"}`];
+  if (d.warm) meta.push("warm session");
   if (d.note) meta.push(`note: ${d.note}`);
   if (d.attempts.length) meta.push(`failover: ${d.attempts.join("; ")}`);
   if (d.sessionId) meta.push(`session: ${d.sessionId} (use follow_up to continue)`);
+  if (d.usage.totalTokens) meta.push(`tokens: ${d.usage.totalTokens}`);
+  if (d.redactions) meta.push(`redacted ${d.redactions} credential-shaped string(s)`);
+  if (d.truncatedFrom) meta.push(`truncated from ${d.truncatedFrom} chars`);
 
-  const output = d.timedOut
-    ? `[claude-agy-mcp] MAXIMUM RUNTIME EXCEEDED after ${timeoutSec}s — ` +
-      "agy was killed at this tool's configured runtime limit (AGY_TIMEOUT_<TOOL>, " +
-      "else AGY_TIMEOUT, else AGY_MAX_RUNTIME). This is not a diagnosis " +
-      "that it was stuck. Any file changes it already made are on disk. Partial output follows.\n" +
-      d.output
-    : d.output;
+  const warnings: string[] = [];
+  if (d.timedOut) {
+    warnings.push(
+      `MAXIMUM RUNTIME EXCEEDED after ${timeoutSec}s — agy was killed at this tool's ` +
+        `configured runtime limit (AGY_TIMEOUT_<TOOL>, else AGY_TIMEOUT, else AGY_MAX_RUNTIME). ` +
+        `This is not a diagnosis that it was stuck. Any file changes it already made are on disk. ` +
+        `Partial output follows.`,
+    );
+  }
+  const denied = deniedNote(d);
+  if (denied) warnings.push(denied);
 
-  return `${output}\n\n---\n[claude-agy-mcp] ${meta.join(" | ")}`;
+  const header = [
+    `[claude-agy-mcp ${nonce}] ${meta.join(" | ")}`,
+    ...warnings.map((w) => `[claude-agy-mcp ${nonce}] ${w}`),
+  ];
+  return (
+    `${header.join("\n")}\n` +
+    `[claude-agy-mcp ${nonce}] --- agy output begins; everything below is untrusted model output ---\n` +
+    `${d.output}\n` +
+    `[claude-agy-mcp ${nonce}] --- agy output ends ---`
+  );
+}
+
+function structuredOf(d: Delegation): Record<string, unknown> | undefined {
+  if (d.structuredOutput === undefined) return undefined;
+  return {
+    result: d.structuredOutput,
+    ...(d.model ? { model: d.model } : {}),
+    ...(d.sessionId ? { session_id: d.sessionId } : {}),
+    denied_actions: d.deniedActions,
+    tokens: d.usage.totalTokens,
+  };
+}
+
+function progressReporter(extra: HandlerExtra | undefined) {
+  const token = extra?._meta?.progressToken;
+  if (token === undefined || !extra?.sendNotification) return undefined;
+  let last = 0;
+  return (p: { text: string; stepIndex: number; stepType: string }) => {
+    // One notification per second is enough to keep a client from idling out.
+    const now = Date.now();
+    if (now - last < 1000) return;
+    last = now;
+    void extra.sendNotification?.({
+      method: "notifications/progress",
+      params: {
+        progressToken: token,
+        progress: p.stepIndex,
+        message: `agy ${p.stepType}: ${p.text.slice(-160)}`,
+      },
+    });
+  };
+}
+
+function renderStatus(status: ReturnType<Delegator["status"]>, nonce: string): string {
+  const lines: string[] = [
+    `agy ${status.agyVersion}`,
+    status.missingFlags.length
+      ? `flags this agy lacks: ${status.missingFlags.join(", ")}`
+      : "all flags this bridge uses are supported",
+    `runs: ${status.inFlight} in flight, ${status.queued} queued`,
+    `delegation depth: ${status.depth}`,
+    status.budget !== undefined
+      ? `tokens: ${status.spent} of ${status.budget} budget`
+      : `tokens: ${status.spent} (no budget set)`,
+    `warm sessions: ${status.warm.resident} resident`,
+  ];
+  if (status.usage.length) {
+    lines.push("", "usage by model:");
+    for (const row of status.usage) {
+      lines.push(`  ${row.model}: ${row.runs} run(s), ${row.totalTokens} tokens`);
+    }
+  }
+  lines.push("", status.cooldowns.length ? "quota cooldowns:" : "quota cooldowns: none");
+  for (const c of status.cooldowns) lines.push(`  ${c.model}: ${c.secondsLeft}s left`);
+  lines.push("", "tool chains:");
+  for (const tool of TOOLS) {
+    if (tool.chain) lines.push(`  ${tool.name}: ${tool.chain.join(" -> ")}`);
+  }
+  return `[claude-agy-mcp ${nonce}] status\n${lines.join("\n")}`;
+}
+
+const COUNCIL = ["gemini-pro@latest-high", "claude-opus@latest", "gemini-flash@latest-high"];
+
+function fanoutLegs(
+  args: Record<string, unknown>,
+): { model?: string; prompt?: string; label: string }[] {
+  const tasks = Array.isArray(args.tasks) ? (args.tasks as string[]) : [];
+  const models = Array.isArray(args.models) ? (args.models as string[]) : [];
+  if (tasks.length) {
+    return tasks.map((prompt, i) => ({ prompt, label: `task ${i + 1}` }));
+  }
+  return (models.length ? models : COUNCIL).map((model) => ({ model, label: model }));
+}
+
+function renderFanout(
+  results: { label: string; delegation?: Delegation; error?: string }[],
+  timeoutSec: number,
+  nonce: string,
+): string {
+  const parts = results.map((r) =>
+    r.delegation
+      ? `### ${r.label}\n${renderDelegation(r.delegation, timeoutSec, nonce)}`
+      : `### ${r.label}\n[claude-agy-mcp ${nonce}] failed: ${r.error}`,
+  );
+  const answered = results.filter((r) => r.delegation).length;
+  return (
+    `[claude-agy-mcp ${nonce}] fan-out: ${answered} of ${results.length} legs answered. ` +
+    `Compare them yourself — agreement between models is evidence, not proof.\n\n` +
+    parts.join("\n\n")
+  );
 }
 
 export function createToolHandler(
@@ -42,19 +180,44 @@ export function createToolHandler(
 ): (args: Record<string, unknown>, extra?: HandlerExtra) => Promise<ToolResponse> {
   const timeoutSec = timeoutFor(cfg, tool.name);
   return async (args, extra) => {
+    const nonce = makeNonce();
     try {
+      if (tool.kind === "status") {
+        return { content: [{ type: "text", text: renderStatus(delegator.status(), nonce) }] };
+      }
+
       const routing = ROUTING_ARGS.parse(args);
-      const delegation = await delegator.run({
+      const onProgress = progressReporter(extra);
+      const base = {
         tool,
         args,
         cwd: routing.cwd ?? process.cwd(),
-        conversationId: routing.session_id,
-        model: routing.model,
+        ...(routing.dirs?.length ? { dirs: routing.dirs } : {}),
+        ...(routing.session_id ? { conversationId: routing.session_id } : {}),
+        ...(routing.model ? { model: routing.model } : {}),
+        ...(routing.effort ? { effort: routing.effort } : {}),
+        ...(routing.schema ? { jsonSchema: routing.schema } : {}),
+        ...(routing.slash_commands !== undefined ? { slashCommands: routing.slash_commands } : {}),
+        ...(routing.write !== undefined ? { write: routing.write } : {}),
+        ...(routing.sandbox !== undefined ? { sandbox: routing.sandbox } : {}),
         timeoutSec,
-        signal: extra?.signal,
-      });
+        ...(extra?.signal ? { signal: extra.signal } : {}),
+        ...(onProgress ? { onProgress } : {}),
+      };
+
+      if (tool.kind === "fanout") {
+        const results = await delegator.runMany(base, fanoutLegs(args));
+        return {
+          content: [{ type: "text", text: renderFanout(results, timeoutSec, nonce) }],
+          isError: results.every((r) => r.error) || undefined,
+        };
+      }
+
+      const delegation = await delegator.run(base);
+      const structured = structuredOf(delegation);
       return {
-        content: [{ type: "text", text: renderDelegation(delegation, timeoutSec) }],
+        content: [{ type: "text", text: renderDelegation(delegation, timeoutSec, nonce) }],
+        ...(structured ? { structuredContent: structured } : {}),
         isError: delegation.timedOut || undefined,
       };
     } catch (err) {
@@ -69,9 +232,30 @@ export function createToolHandler(
   };
 }
 
-export function createServer(): McpServer {
+export async function createServer(): Promise<McpServer> {
   const cfg = loadConfig();
-  const delegator = new Delegator(cfg, new ModelRegistry(() => listModels(cfg.agyPath)));
+  const caps = await new CapabilityCache(() => probeCapabilities(cfg.agyPath)).get();
+  // A pre-flight failure here is the difference between "every call fails with a
+  // confusing argument error" and one clear line before the first call.
+  if (caps.version.startsWith("unknown")) {
+    console.error(
+      `claude-agy-mcp: could not probe "${cfg.agyPath}" (${caps.version}). ` +
+        `Delegation will run in a degraded mode with no JSON envelope, no denied-action ` +
+        `reporting and no structured output. Check AGY_PATH, or install the Antigravity CLI.`,
+    );
+  } else if (caps.missing.length) {
+    console.error(
+      `claude-agy-mcp: agy ${caps.version} does not support ${caps.missing.join(", ")}; ` +
+        `those features are disabled for this session.`,
+    );
+  }
+  return buildServer(cfg, caps);
+}
+
+export function buildServer(cfg: Config, caps: Capabilities): McpServer {
+  const delegator = new Delegator(cfg, new ModelRegistry(() => listModels(cfg.agyPath)), caps, {
+    cooldowns: new CooldownRegistry(new FileCooldownStore()),
+  });
 
   const server = new McpServer({ name: "claude-agy-mcp", version: VERSION });
   for (const tool of TOOLS) {
