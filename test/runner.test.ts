@@ -6,10 +6,8 @@ import { fakeAgy, FAST_TIMING, LOG_429 } from "./support.js";
 
 const cfg: Config = {
   agyPath: "agy",
-  timeoutSec: 600,
-  timeoutExplicit: false,
+  defaultTimeoutSec: 3600,
   perToolTimeouts: {},
-  maxRuntimeSec: 3600,
   maxOutputChars: 100,
   defaultModel: undefined,
   skipPermissions: true,
@@ -40,9 +38,9 @@ describe("buildArgs", () => {
     ]);
   });
 
-  it("falls back to cfg timeout; adds --conversation and --sandbox when set", () => {
+  it("adds --conversation and --sandbox when set", () => {
     const args = buildArgs(
-      { prompt: "q", cwd: "/repo", conversationId: "abc-123" },
+      { prompt: "q", cwd: "/repo", conversationId: "abc-123", timeoutSec: 600 },
       { ...cfg, sandbox: true, skipPermissions: false },
       "/tmp/run.log",
     );
@@ -80,20 +78,20 @@ describe("runAgy", () => {
 
   it("returns the agy output", async () => {
     const agy = fakeAgy({ stdout: "answer\n" });
-    expect((await run({ prompt: "q", cwd: "/repo" }, agy)).output).toBe("answer");
+    expect((await run({ prompt: "q", cwd: "/repo", timeoutSec: 600 }, agy)).output).toBe("answer");
   });
 
   it("kills the child and throws QuotaError when the log shows a 429", async () => {
     const agy = fakeAgy({ neverExit: true, log: LOG_429 });
     await expect(
-      run({ prompt: "q", cwd: "/repo", model: "Gemini 3.5 Flash (Medium)" }, agy),
+      run({ prompt: "q", cwd: "/repo", model: "Gemini 3.5 Flash (Medium)", timeoutSec: 600 }, agy),
     ).rejects.toThrow(QuotaError);
     expect(agy.kills).toContain("SIGTERM");
   });
 
   it("includes the reset time in the QuotaError", async () => {
     const agy = fakeAgy({ neverExit: true, log: LOG_429 });
-    const err = (await run({ prompt: "q", cwd: "/repo", model: "M" }, agy).catch(
+    const err = (await run({ prompt: "q", cwd: "/repo", model: "M", timeoutSec: 600 }, agy).catch(
       (e) => e,
     )) as QuotaError;
     expect(err).toBeInstanceOf(QuotaError);
@@ -119,7 +117,7 @@ describe("runAgy", () => {
   it("kills the child and rejects when the abort signal fires", async () => {
     const agy = fakeAgy({ neverExit: true });
     const ac = new AbortController();
-    const p = run({ prompt: "q", cwd: "/repo", signal: ac.signal }, agy);
+    const p = run({ prompt: "q", cwd: "/repo", timeoutSec: 600, signal: ac.signal }, agy);
     setTimeout(() => ac.abort(), 10);
     await expect(p).rejects.toThrow(/cancelled/i);
     expect(agy.kills.length).toBeGreaterThan(0);
@@ -127,31 +125,37 @@ describe("runAgy", () => {
 
   it("treats empty output with a quota log as QuotaError, not success", async () => {
     const agy = fakeAgy({ stdout: "", exitCode: 0, log: LOG_429 });
-    await expect(run({ prompt: "q", cwd: "/repo", model: "M" }, agy)).rejects.toThrow(QuotaError);
+    await expect(
+      run({ prompt: "q", cwd: "/repo", model: "M", timeoutSec: 600 }, agy),
+    ).rejects.toThrow(QuotaError);
   });
 
   it("treats empty output with a clean log as an error, not success", async () => {
     const agy = fakeAgy({ stdout: "", exitCode: 0 });
-    await expect(run({ prompt: "q", cwd: "/repo" }, agy)).rejects.toThrow(/empty output/i);
+    await expect(run({ prompt: "q", cwd: "/repo", timeoutSec: 600 }, agy)).rejects.toThrow(
+      /empty output/i,
+    );
   });
 
   it("throws install guidance on ENOENT", async () => {
     const e = new Error("spawn agy ENOENT") as NodeJS.ErrnoException;
     e.code = "ENOENT";
     const agy = fakeAgy({ spawnError: e, exitCode: null });
-    await expect(run({ prompt: "q", cwd: "/repo" }, agy)).rejects.toThrow(
+    await expect(run({ prompt: "q", cwd: "/repo", timeoutSec: 600 }, agy)).rejects.toThrow(
       /not found.*antigravity/is,
     );
   });
 
   it("surfaces stderr on non-zero exit", async () => {
     const agy = fakeAgy({ exitCode: 1, stderr: "auth expired" });
-    await expect(run({ prompt: "q", cwd: "/repo" }, agy)).rejects.toThrow(/auth expired/);
+    await expect(run({ prompt: "q", cwd: "/repo", timeoutSec: 600 }, agy)).rejects.toThrow(
+      /auth expired/,
+    );
   });
 
   it("removes its run log when the run finishes", async () => {
     const agy = fakeAgy({ stdout: "answer" });
-    await run({ prompt: "q", cwd: "/repo" }, agy);
+    await run({ prompt: "q", cwd: "/repo", timeoutSec: 600 }, agy);
     const logPath = agy.runs[0][agy.runs[0].indexOf("--log-file") + 1];
     expect(logPath).toMatch(/claude-agy-mcp-\d+-/);
     const { existsSync } = await import("node:fs");

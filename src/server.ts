@@ -1,5 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { loadConfig, type Config } from "./config.js";
+import { loadConfig, timeoutFor, type Config } from "./config.js";
 import { Delegator, type Delegation } from "./delegation.js";
 import { ModelRegistry, listModels } from "./models.js";
 import { ROUTING_ARGS, TOOLS, type ToolDef } from "./tools.js";
@@ -40,8 +40,7 @@ export function createToolHandler(
   delegator: Delegator,
 ): (args: Record<string, unknown>, extra?: HandlerExtra) => Promise<ToolResponse> {
   return async (args, extra) => {
-    const timeoutSec =
-      cfg.perToolTimeouts[tool.name] ?? (cfg.timeoutExplicit ? cfg.timeoutSec : cfg.maxRuntimeSec);
+    const timeoutSec = timeoutFor(cfg, tool.name);
     try {
       const routing = ROUTING_ARGS.parse(args);
       const delegation = await delegator.run({

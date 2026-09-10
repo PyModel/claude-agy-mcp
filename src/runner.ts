@@ -11,8 +11,8 @@ export interface RunRequest {
   cwd: string;
   model?: string;
   conversationId?: string;
-  /** Per-call timeout; falls back to cfg.timeoutSec. */
-  timeoutSec?: number;
+  /** How long this run may take, already resolved by `timeoutFor`. */
+  timeoutSec: number;
   /** MCP cancellation signal — kills the agy process when aborted. */
   signal?: AbortSignal;
 }
@@ -122,7 +122,6 @@ async function readLog(logPath: string): Promise<string> {
 }
 
 export function buildArgs(req: RunRequest, cfg: Config, logPath: string): string[] {
-  const timeoutSec = req.timeoutSec ?? cfg.timeoutSec;
   const args: string[] = [];
   if (cfg.skipPermissions) args.push("--dangerously-skip-permissions");
   if (cfg.sandbox) args.push("--sandbox");
@@ -130,7 +129,7 @@ export function buildArgs(req: RunRequest, cfg: Config, logPath: string): string
   args.push("--log-file", logPath);
   if (req.conversationId) args.push("--conversation", req.conversationId);
   if (req.model) args.push("--model", req.model);
-  args.push("--print-timeout", `${timeoutSec}s`, "-p", req.prompt);
+  args.push("--print-timeout", `${req.timeoutSec}s`, "-p", req.prompt);
   return args;
 }
 
@@ -150,7 +149,6 @@ export async function runAgy(
   deps: RunnerDeps = {},
 ): Promise<RunResult> {
   const spawnAgy = deps.spawn ?? spawnDetached;
-  const timeoutSec = req.timeoutSec ?? cfg.timeoutSec;
   const pollMs = deps.timing?.pollMs ?? 1000;
   const graceMs = deps.timing?.graceMs ?? 15_000;
   const killGraceMs = deps.timing?.killGraceMs ?? 5_000;
@@ -205,7 +203,7 @@ export async function runAgy(
           timedOut = true;
           finish(() => resolve(child.stdout().trim()));
         },
-        timeoutSec * 1000 + graceMs,
+        req.timeoutSec * 1000 + graceMs,
       ),
     );
 

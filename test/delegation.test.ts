@@ -125,7 +125,7 @@ describe("Delegator", () => {
 
   it("marks a run that hit the deadline instead of failing over", async () => {
     const agy = agyWhere([], ["Gemini 3.7 Flash (High)"]);
-    const d = await delegatorFor(agy, { timeoutSec: 0.05 }).run({
+    const d = await delegatorFor(agy).run({
       ...request("delegate", { prompt: "x" }),
       timeoutSec: 0.05,
     });

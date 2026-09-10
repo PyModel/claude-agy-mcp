@@ -1,15 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, timeoutFor } from "../src/config.js";
 
 describe("loadConfig", () => {
   it("returns defaults for empty env", () => {
     const c = loadConfig({});
     expect(c).toEqual({
       agyPath: "agy",
-      timeoutSec: 1200,
-      timeoutExplicit: false,
+      defaultTimeoutSec: 3600,
       perToolTimeouts: {},
-      maxRuntimeSec: 3600,
       maxOutputChars: 50_000,
       defaultModel: "Gemini 3.7 Flash (High)",
       skipPermissions: true,
@@ -29,9 +27,7 @@ describe("loadConfig", () => {
       AGY_SANDBOX: "true",
     });
     expect(c.agyPath).toBe("/opt/agy");
-    expect(c.timeoutSec).toBe(300);
-    expect(c.timeoutExplicit).toBe(true);
-    expect(c.maxRuntimeSec).toBe(900);
+    expect(c.defaultTimeoutSec).toBe(300);
     expect(c.maxOutputChars).toBe(1000);
     expect(c.defaultModel).toBe("Gemini 3.1 Pro (High)");
     expect(c.skipPermissions).toBe(false);
@@ -44,14 +40,16 @@ describe("loadConfig", () => {
       AGY_MAX_RUNTIME: "abc",
       AGY_MAX_OUTPUT_CHARS: "-5",
     });
-    expect(c.timeoutSec).toBe(1200);
-    expect(c.timeoutExplicit).toBe(false);
-    expect(c.maxRuntimeSec).toBe(3600);
+    expect(c.defaultTimeoutSec).toBe(3600);
     expect(c.maxOutputChars).toBe(50_000);
   });
 
-  it("falls back to the default max runtime for zero", () => {
-    expect(loadConfig({ AGY_MAX_RUNTIME: "0" }).maxRuntimeSec).toBe(3600);
+  it("falls back to the default ceiling for zero", () => {
+    expect(loadConfig({ AGY_MAX_RUNTIME: "0" }).defaultTimeoutSec).toBe(3600);
+  });
+
+  it("uses the AGY_MAX_RUNTIME ceiling when AGY_TIMEOUT is unset", () => {
+    expect(loadConfig({ AGY_MAX_RUNTIME: "900" }).defaultTimeoutSec).toBe(900);
   });
 
   it("parses per-tool AGY_TIMEOUT_<TOOL> overrides", () => {
@@ -64,11 +62,27 @@ describe("loadConfig", () => {
     expect(c.perToolTimeouts).toEqual({});
   });
 
+  it("prefers an explicit AGY_TIMEOUT over the ceiling", () => {
+    expect(loadConfig({ AGY_TIMEOUT: "300", AGY_MAX_RUNTIME: "900" }).defaultTimeoutSec).toBe(300);
+  });
+
   it("reads AGY_ON_FAILURE=strict", () => {
     expect(loadConfig({ AGY_ON_FAILURE: "strict" }).onFailure).toBe("strict");
   });
 
   it("treats unknown AGY_ON_FAILURE values as fallback", () => {
     expect(loadConfig({ AGY_ON_FAILURE: "explode" }).onFailure).toBe("fallback");
+  });
+});
+
+describe("timeoutFor", () => {
+  it("uses the default when the tool has no override", () => {
+    expect(timeoutFor(loadConfig({}), "delegate")).toBe(3600);
+  });
+
+  it("prefers a per-tool override over an explicit AGY_TIMEOUT", () => {
+    const c = loadConfig({ AGY_TIMEOUT: "900", AGY_TIMEOUT_DEEP_SEARCH: "300" });
+    expect(timeoutFor(c, "deep_search")).toBe(300);
+    expect(timeoutFor(c, "web_lookup")).toBe(900);
   });
 });

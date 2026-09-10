@@ -1,15 +1,15 @@
 export interface Config {
   agyPath: string;
-  timeoutSec: number;
-  /** True when AGY_TIMEOUT was set explicitly; overrides the max runtime ceiling. */
-  timeoutExplicit: boolean;
+  /**
+   * Timeout for a tool with no AGY_TIMEOUT_<TOOL> override: AGY_TIMEOUT when it
+   * is set, otherwise the AGY_MAX_RUNTIME resource ceiling.
+   */
+  defaultTimeoutSec: number;
   /**
    * Per-tool timeout overrides from AGY_TIMEOUT_<TOOL_NAME> env vars
    * (e.g. AGY_TIMEOUT_DEEP_SEARCH), keyed by lowercased tool name.
-   * Takes precedence over the global AGY_TIMEOUT and the max runtime ceiling.
    */
   perToolTimeouts: Record<string, number>;
-  maxRuntimeSec: number;
   maxOutputChars: number;
   defaultModel: string | undefined;
   skipPermissions: boolean;
@@ -34,13 +34,16 @@ function loadPerToolTimeouts(env: Record<string, string | undefined>): Record<st
   return out;
 }
 
+/** How long one tool's run may take. The whole precedence rule lives here. */
+export function timeoutFor(cfg: Config, toolName: string): number {
+  return cfg.perToolTimeouts[toolName] ?? cfg.defaultTimeoutSec;
+}
+
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
   return {
     agyPath: env.AGY_PATH || "agy",
-    timeoutSec: positiveInt(env.AGY_TIMEOUT, 1200),
-    timeoutExplicit: positiveInt(env.AGY_TIMEOUT, 0) > 0,
+    defaultTimeoutSec: positiveInt(env.AGY_TIMEOUT, positiveInt(env.AGY_MAX_RUNTIME, 3600)),
     perToolTimeouts: loadPerToolTimeouts(env),
-    maxRuntimeSec: positiveInt(env.AGY_MAX_RUNTIME, 3600),
     maxOutputChars: positiveInt(env.AGY_MAX_OUTPUT_CHARS, 50_000),
     defaultModel: env.AGY_DEFAULT_MODEL || "Gemini 3.7 Flash (High)",
     skipPermissions: env.AGY_SKIP_PERMISSIONS !== "false",

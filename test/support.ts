@@ -72,10 +72,8 @@ export const FAST_TIMING = { pollMs: 5, graceMs: 20, killGraceMs: 5 };
 /** Baseline config for tests; override per case with `{ ...testConfig, ... }`. */
 export const testConfig: Config = {
   agyPath: "agy",
-  timeoutSec: 600,
-  timeoutExplicit: false,
+  defaultTimeoutSec: 3600,
   perToolTimeouts: {},
-  maxRuntimeSec: 3600,
   maxOutputChars: 50_000,
   defaultModel: undefined,
   skipPermissions: true,

@@ -89,15 +89,15 @@ describe("createToolHandler", () => {
     }
   });
 
-  it("explicit AGY_TIMEOUT overrides the runtime ceiling", async () => {
-    const { handler, agy } = handlerFor("web_lookup", { timeoutSec: 900, timeoutExplicit: true });
+  it("uses the configured default timeout", async () => {
+    const { handler, agy } = handlerFor("web_lookup", { defaultTimeoutSec: 900 });
     await handler({ query: "q" });
     const args = agy.runs[0];
     expect(args[args.indexOf("--print-timeout") + 1]).toBe("900s");
   });
 
-  it("a per-tool override wins over the explicit global AGY_TIMEOUT", async () => {
-    const cfg = { timeoutSec: 900, timeoutExplicit: true, perToolTimeouts: { deep_search: 300 } };
+  it("a per-tool override wins over the default timeout", async () => {
+    const cfg = { defaultTimeoutSec: 900, perToolTimeouts: { deep_search: 300 } };
     const search = handlerFor("deep_search", cfg);
     await search.handler({ query: "q" });
     expect(search.agy.runs[0][search.agy.runs[0].indexOf("--print-timeout") + 1]).toBe("300s");
@@ -109,7 +109,7 @@ describe("createToolHandler", () => {
 
   it("flags a timed-out delegation as an error", async () => {
     const agy = fakeAgy({ neverExit: true, stdout: "partial output" });
-    const cfg = { ...testConfig, timeoutSec: 0.05, timeoutExplicit: true };
+    const cfg = { ...testConfig, defaultTimeoutSec: 0.05 };
     const delegator = new Delegator(cfg, new ModelRegistry(async () => LISTING), undefined, {
       spawn: agy.spawn,
       timing: FAST_TIMING,
