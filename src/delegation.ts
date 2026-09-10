@@ -28,7 +28,6 @@ export interface Delegation {
   /** Set when model resolution had to degrade. */
   note?: string;
   sessionId?: string;
-  truncated: boolean;
   timedOut: boolean;
 }
 
@@ -87,7 +86,6 @@ export class Delegator {
           attempts,
           note: resolution.note,
           sessionId: await sessionFor(req.cwd, this.deps.readSessions),
-          truncated: result.truncated,
           timedOut: result.timedOut ?? false,
         };
       } catch (err) {

@@ -13,7 +13,6 @@ const delegation = (over: Partial<Delegation> = {}): Delegation => ({
   output: "the answer",
   model: "Gemini 3.7 Flash (High)",
   attempts: [],
-  truncated: false,
   timedOut: false,
   ...over,
 });

@@ -19,7 +19,6 @@ export interface RunRequest {
 
 export interface RunResult {
   output: string;
-  truncated: boolean;
   timedOut?: boolean;
 }
 
@@ -261,6 +260,6 @@ export async function runAgy(
     });
   }).finally(() => void rm(logPath, { force: true }).catch(() => {}));
 
-  const { text, truncated } = truncate(stdout, cfg.maxOutputChars);
-  return { output: text, truncated, ...(timedOut ? { timedOut: true } : {}) };
+  const { text } = truncate(stdout, cfg.maxOutputChars);
+  return { output: text, ...(timedOut ? { timedOut: true } : {}) };
 }

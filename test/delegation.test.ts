@@ -131,6 +131,8 @@ describe("Delegator", () => {
     });
     expect(d.timedOut).toBe(true);
     expect(d.output).toBe("partial output");
+    // README promises a timed-out run still hands back a session to resume from.
+    expect(d.sessionId).toBe("sess-1");
     expect(agy.runs).toHaveLength(1);
   });
 
