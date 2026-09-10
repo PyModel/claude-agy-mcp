@@ -1,3 +1,22 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * `agy models`, with stdin closed: agy reads stdin until EOF even in print mode,
+ * so an open stdin pipe hangs it forever.
+ */
+export function listModels(agyPath: string): Promise<string> {
+  const promise = execFileAsync(agyPath, ["models"], {
+    cwd: process.cwd(),
+    timeout: 30_000,
+    maxBuffer: 1024 * 1024,
+  });
+  promise.child.stdin?.end();
+  return promise.then(({ stdout }) => stdout);
+}
+
 export function parseModels(output: string): string[] {
   return output
     .split("\n")

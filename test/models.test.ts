@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { parseModels, ModelRegistry } from "../src/models.js";
+import { writeFileSync, chmodSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { parseModels, ModelRegistry, listModels } from "../src/models.js";
 
 const LISTING = `Gemini 3.5 Flash (Medium)
 Gemini 3.7 Flash (High)
@@ -149,5 +152,19 @@ describe("ModelRegistry.resolve", () => {
     await reg.resolve({ chain: ["Gemini 3.7 Flash (High)"] });
     await reg.resolve({ chain: ["Gemini 3.1 Pro (High)"] });
     expect(calls).toBe(1);
+  });
+});
+
+describe("listModels", () => {
+  it("closes stdin so agy exits instead of waiting on EOF", async () => {
+    // A stub that reads stdin to EOF first: it only prints if stdin was closed.
+    const stub = path.join(tmpdir(), `agy-stub-${process.pid}.sh`);
+    writeFileSync(stub, '#!/bin/sh\ncat >/dev/null\necho "Gemini 3.7 Flash (High)"\n');
+    chmodSync(stub, 0o755);
+    try {
+      expect(parseModels(await listModels(stub))).toEqual(["Gemini 3.7 Flash (High)"]);
+    } finally {
+      rmSync(stub, { force: true });
+    }
   });
 });

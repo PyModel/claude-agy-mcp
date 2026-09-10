@@ -13,10 +13,11 @@ describe("TOOLS", () => {
     ]);
   });
 
-  it("every tool except follow_up has a non-empty model chain", () => {
+  it("declares a model chain for every tool that picks its own model", () => {
     for (const t of TOOLS) {
-      if (t.name === "follow_up") expect(t.chain).toEqual([]);
-      else expect(t.chain.length).toBeGreaterThan(0);
+      // follow_up reuses the model of the session it continues, so it declares none.
+      if (t.name === "follow_up") expect(t.chain).toBeUndefined();
+      else expect(t.chain?.length).toBeGreaterThan(0);
     }
   });
 });
@@ -50,12 +51,17 @@ describe("prompt templates", () => {
     expect(p).toMatch(/severity/i);
   });
 
-  it("adversarial_review requires content or files", () => {
-    expect(() => get("adversarial_review").buildPrompt({}, "/repo")).toThrow(/content.*files/i);
+  it("adversarial_review states the content-or-files rule in its schema", () => {
+    const t = get("adversarial_review");
+    expect(t.schema.safeParse({}).success).toBe(false);
+    expect(t.schema.safeParse({ content: "plan" }).success).toBe(true);
+    expect(t.schema.safeParse({ files: ["a.ts"] }).success).toBe(true);
+    expect(() => t.buildPrompt({}, "/repo")).toThrow(/content.*files/i);
   });
 
   it("follow_up passes the question through verbatim", () => {
-    expect(get("follow_up").buildPrompt({ question: "and then?" }, "/repo")).toBe("and then?");
+    const args = { session_id: "sess-1", question: "and then?" };
+    expect(get("follow_up").buildPrompt(args, "/repo")).toBe("and then?");
   });
 
   it("delegate passes the prompt through verbatim", () => {

@@ -1,33 +1,28 @@
-import { execFile, spawn } from "node:child_process";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
 import { readFile, rm } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Config } from "./config.js";
 import { detectQuota, QuotaError } from "./quota.js";
-
-const execFileAsync = promisify(execFile);
 
 export interface RunRequest {
   prompt: string;
   cwd: string;
   model?: string;
   conversationId?: string;
-  /** Per-call timeout; falls back to cfg.timeoutSec. */
-  timeoutSec?: number;
+  /** How long this run may take, already resolved by `timeoutFor`. */
+  timeoutSec: number;
   /** MCP cancellation signal — kills the agy process when aborted. */
   signal?: AbortSignal;
 }
 
 export interface RunResult {
   output: string;
-  truncated: boolean;
-  sessionId?: string;
   timedOut?: boolean;
 }
 
-export interface ChildHandle {
+export interface AgyProcess {
   stdout(): string;
   stderr(): string;
   /** Settles when the process is fully done (exit + closed pipes, or spawn error). */
@@ -36,12 +31,14 @@ export interface ChildHandle {
   kill(signal: NodeJS.Signals): void;
 }
 
-export interface RunnerDeps {
-  spawnChild(file: string, args: string[], cwd: string): ChildHandle;
-  readLog(logPath: string): Promise<string>;
-  removeLog(logPath: string): Promise<void>;
-  readSessionsFile(): Promise<string>;
-  makeLogPath(): string;
+/**
+ * The one seam of this module: how an agy process comes into being. Two adapters
+ * satisfy it — a detached child process in production, a fake agy in tests.
+ */
+export type SpawnAgy = (file: string, args: string[], cwd: string) => AgyProcess;
+
+/** Knobs, not seams: how long the supervisor waits at each stage. */
+export interface RunTiming {
   /** How often to scan the run log for quota errors. */
   pollMs?: number;
   /** Extra wait beyond agy's own --print-timeout before we hard-kill. */
@@ -50,31 +47,15 @@ export interface RunnerDeps {
   killGraceMs?: number;
 }
 
-export type ExecFn = (
-  file: string,
-  args: string[],
-  options: { cwd: string; timeout: number; maxBuffer: number },
-) => Promise<{ stdout: string; stderr: string }>;
-
-export const SESSIONS_FILE = path.join(
-  homedir(),
-  ".gemini",
-  "antigravity-cli",
-  "cache",
-  "last_conversations.json",
-);
-
-// agy reads stdin until EOF even in print mode; an open stdin pipe hangs it forever.
-export const execWithClosedStdin: ExecFn = (file, args, options) => {
-  const promise = execFileAsync(file, args, options);
-  promise.child.stdin?.end();
-  return promise;
-};
+export interface RunnerDeps {
+  spawn?: SpawnAgy;
+  timing?: RunTiming;
+}
 
 const MAX_STDOUT_CHARS = 64 * 1024 * 1024;
 const MAX_STDERR_CHARS = 1024 * 1024;
 
-function spawnDetached(file: string, args: string[], cwd: string): ChildHandle {
+const spawnDetached: SpawnAgy = (file, args, cwd) => {
   const child = spawn(file, args, { cwd, detached: true });
   child.stdin?.end();
 
@@ -124,24 +105,22 @@ function spawnDetached(file: string, args: string[], cwd: string): ChildHandle {
       }
     },
   };
-}
-
-export const defaultDeps: RunnerDeps = {
-  spawnChild: spawnDetached,
-  readLog: async (logPath) => {
-    try {
-      return await readFile(logPath, "utf8");
-    } catch {
-      return "";
-    }
-  },
-  removeLog: (logPath) => rm(logPath, { force: true }),
-  readSessionsFile: () => readFile(SESSIONS_FILE, "utf8"),
-  makeLogPath: () => path.join(tmpdir(), `claude-agy-mcp-${process.pid}-${randomUUID()}.log`),
 };
 
+function makeLogPath(): string {
+  return path.join(tmpdir(), `claude-agy-mcp-${process.pid}-${randomUUID()}.log`);
+}
+
+// agy only reports RESOURCE_EXHAUSTED to its log file, never to stdout/stderr.
+async function readLog(logPath: string): Promise<string> {
+  try {
+    return await readFile(logPath, "utf8");
+  } catch {
+    return "";
+  }
+}
+
 export function buildArgs(req: RunRequest, cfg: Config, logPath: string): string[] {
-  const timeoutSec = req.timeoutSec ?? cfg.timeoutSec;
   const args: string[] = [];
   if (cfg.skipPermissions) args.push("--dangerously-skip-permissions");
   if (cfg.sandbox) args.push("--sandbox");
@@ -149,34 +128,33 @@ export function buildArgs(req: RunRequest, cfg: Config, logPath: string): string
   args.push("--log-file", logPath);
   if (req.conversationId) args.push("--conversation", req.conversationId);
   if (req.model) args.push("--model", req.model);
-  args.push("--print-timeout", `${timeoutSec}s`, "-p", req.prompt);
+  args.push("--print-timeout", `${req.timeoutSec}s`, "-p", req.prompt);
   return args;
 }
 
-export function truncate(text: string, max: number): { text: string; truncated: boolean } {
-  if (text.length <= max) return { text, truncated: false };
-  return {
-    text:
-      `${text.slice(0, max)}\n\n[claude-agy-mcp: output truncated at ${max} chars; ` +
-      `full length was ${text.length} chars. Ask a narrower question or raise AGY_MAX_OUTPUT_CHARS.]`,
-    truncated: true,
-  };
+/** Cuts `text` to `max`, stating the cut inside the text it returns. */
+export function truncate(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return (
+    `${text.slice(0, max)}\n\n[claude-agy-mcp: output truncated at ${max} chars; ` +
+    `full length was ${text.length} chars. Ask a narrower question or raise AGY_MAX_OUTPUT_CHARS.]`
+  );
 }
 
 export async function runAgy(
   req: RunRequest,
   cfg: Config,
-  deps: RunnerDeps = defaultDeps,
+  deps: RunnerDeps = {},
 ): Promise<RunResult> {
-  const timeoutSec = req.timeoutSec ?? cfg.timeoutSec;
-  const pollMs = deps.pollMs ?? 1000;
-  const graceMs = deps.graceMs ?? 15_000;
-  const killGraceMs = deps.killGraceMs ?? 5_000;
-  const logPath = deps.makeLogPath();
+  const spawnAgy = deps.spawn ?? spawnDetached;
+  const pollMs = deps.timing?.pollMs ?? 1000;
+  const graceMs = deps.timing?.graceMs ?? 15_000;
+  const killGraceMs = deps.timing?.killGraceMs ?? 5_000;
+  const logPath = makeLogPath();
   let timedOut = false;
 
   const stdout = await new Promise<string>((resolve, reject) => {
-    const child = deps.spawnChild(cfg.agyPath, buildArgs(req, cfg, logPath), req.cwd);
+    const child = spawnAgy(cfg.agyPath, buildArgs(req, cfg, logPath), req.cwd);
 
     let settled = false;
     let polling = false;
@@ -202,7 +180,7 @@ export async function runAgy(
       if (polling || settled) return;
       polling = true;
       try {
-        const log = await deps.readLog(logPath);
+        const log = await readLog(logPath);
         if (settled) return; // settled during the async read — don't kill a finished run
         const quota = detectQuota(log);
         if (quota) {
@@ -223,7 +201,7 @@ export async function runAgy(
           timedOut = true;
           finish(() => resolve(child.stdout().trim()));
         },
-        timeoutSec * 1000 + graceMs,
+        req.timeoutSec * 1000 + graceMs,
       ),
     );
 
@@ -265,7 +243,7 @@ export async function runAgy(
       if (!out) {
         // agy swallows quota errors and exits 0 with empty output after its
         // print-timeout — check the log before reporting anything as success.
-        const quota = detectQuota(await deps.readLog(logPath));
+        const quota = detectQuota(await readLog(logPath));
         finish(() =>
           reject(
             quota
@@ -279,18 +257,9 @@ export async function runAgy(
       }
       finish(() => resolve(out));
     });
-  }).finally(() => void deps.removeLog(logPath).catch(() => {}));
+    // Returned, not discarded: callers (and tests) must not observe the log
+    // still on disk after runAgy resolves.
+  }).finally(() => rm(logPath, { force: true }).catch(() => {}));
 
-  const { text, truncated } = truncate(stdout, cfg.maxOutputChars);
-
-  let sessionId: string | undefined;
-  try {
-    const map = JSON.parse(await deps.readSessionsFile()) as Record<string, string>;
-    const want = path.resolve(req.cwd);
-    sessionId = map[want] ?? Object.entries(map).find(([k]) => path.resolve(k) === want)?.[1];
-  } catch {
-    sessionId = undefined;
-  }
-
-  return { output: text, truncated, sessionId, ...(timedOut ? { timedOut: true } : {}) };
+  return { output: truncate(stdout, cfg.maxOutputChars), ...(timedOut ? { timedOut: true } : {}) };
 }
