@@ -9,7 +9,7 @@ import {
   type RunResult,
 } from "./runner.js";
 import { CooldownRegistry, QuotaError } from "./quota.js";
-import { TOOLS, type ToolDef } from "./tools.js";
+import { ROUTING_ARGS, TOOLS, type ToolDef } from "./tools.js";
 
 /** Keep in sync with package.json — test/server.test.ts fails if they drift. */
 export const VERSION = "2.0.0";
@@ -33,8 +33,9 @@ export function createToolHandler(
 ): (args: Record<string, unknown>, extra?: HandlerExtra) => Promise<ToolResponse> {
   return async (args, extra) => {
     try {
-      const cwd = (args.cwd as string | undefined) ?? process.cwd();
-      const conversationId = args.session_id as string | undefined;
+      const routing = ROUTING_ARGS.parse(args);
+      const cwd = routing.cwd ?? process.cwd();
+      const conversationId = routing.session_id;
       const prompt = tool.buildPrompt(args, cwd);
       const timeoutSec =
         cfg.perToolTimeouts[tool.name] ??
@@ -43,8 +44,8 @@ export function createToolHandler(
       const resolution = conversationId
         ? { models: [undefined], note: undefined }
         : await registry.resolveChain({
-            explicit: args.model as string | undefined,
-            chain: tool.chain,
+            explicit: routing.model,
+            chain: tool.chain ?? [],
             defaultModel: cfg.defaultModel,
           });
 
