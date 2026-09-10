@@ -56,7 +56,7 @@ export interface RunnerDeps {
 const MAX_STDOUT_CHARS = 64 * 1024 * 1024;
 const MAX_STDERR_CHARS = 1024 * 1024;
 
-export const spawnDetached: SpawnAgy = (file, args, cwd) => {
+const spawnDetached: SpawnAgy = (file, args, cwd) => {
   const child = spawn(file, args, { cwd, detached: true });
   child.stdin?.end();
 
