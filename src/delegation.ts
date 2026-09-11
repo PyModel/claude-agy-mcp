@@ -426,6 +426,10 @@ export class Delegator {
     req: DelegationRequest,
     legs: { model?: string; prompt?: string; label: string }[],
   ): Promise<{ label: string; delegation?: Delegation; error?: string }[]> {
+    // Legs swallow their own errors, so the ask-once gate has to trip before fan-out.
+    if (this.cfg.askModel && !this.prefs.load() && !req.model && !req.conversationId) {
+      throw new ModelNotChosenError(await this.defaultChoice(), await this.models.available());
+    }
     return Promise.all(
       legs.map(async (leg) => {
         try {

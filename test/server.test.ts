@@ -1,6 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { readFile } from "node:fs/promises";
-import { createToolHandler, makeNonce, renderDelegation, VERSION } from "../src/server.js";
+import {
+  createToolHandler,
+  makeNonce,
+  renderDelegation,
+  VERSION,
+  type Elicit,
+} from "../src/server.js";
+import type { ElicitRequestFormParams } from "@modelcontextprotocol/sdk/types.js";
 import { type Delegation } from "../src/delegation.js";
 import type { Config } from "../src/config.js";
 import { EMPTY_USAGE } from "../src/envelope.js";
@@ -242,6 +249,70 @@ describe("createToolHandler", () => {
       expect(textOf(await status({}))).toContain(
         "model choice (set_model): Gemini 3.1 Pro (Low) at low effort",
       );
+    });
+
+    it("asks the user through elicitation when the client supports it, then runs", async () => {
+      const agy = fakeAgy({ answer: "the answer" });
+      const { cfg, delegator } = makeDelegator({
+        spawn: agy.spawn,
+        cfg: { askModel: true, defaultModel: "gemini-flash@latest-high" },
+      });
+      const asked: ElicitRequestFormParams[] = [];
+      const elicit: Elicit = async (params) => {
+        asked.push(params);
+        return { action: "accept", content: { model: "Gemini 3.1 Pro (High)", effort: "low" } };
+      };
+      const handler = createToolHandler(toolNamed("web_lookup"), cfg, delegator, () => elicit);
+      const res = await handler({ query: "docs" });
+      expect(res.isError).toBeUndefined();
+      expect(asked).toHaveLength(1);
+      expect(asked[0]!.message).toContain(
+        "Proceed with the default — Gemini 3.8 Flash (High) at high effort",
+      );
+      const modelField = asked[0]!.requestedSchema.properties.model as {
+        default?: string;
+        oneOf: unknown[];
+      };
+      expect(modelField.default).toBe("Gemini 3.8 Flash (High)");
+      expect(modelField.oneOf.length).toBeGreaterThan(3);
+      expect(agy.modelOf(agy.runs[0]!)).toBe("Gemini 3.1 Pro (Low)");
+      expect(delegator.status().preference?.model).toBe("Gemini 3.1 Pro (Low)");
+
+      // Asked once: the second call goes straight through.
+      await handler({ query: "again" });
+      expect(asked).toHaveLength(1);
+    });
+
+    it("accepting the form unchanged records the default", async () => {
+      const agy = fakeAgy({ answer: "the answer" });
+      const { cfg, delegator } = makeDelegator({
+        spawn: agy.spawn,
+        cfg: { askModel: true, defaultModel: "gemini-flash@latest-high" },
+      });
+      const elicit: Elicit = async () => ({ action: "accept", content: {} });
+      const handler = createToolHandler(toolNamed("web_lookup"), cfg, delegator, () => elicit);
+      await handler({ query: "docs" });
+      expect(agy.modelOf(agy.runs[0]!)).toBe("Gemini 3.8 Flash (High)");
+    });
+
+    it("delegates nothing when the user declines the form", async () => {
+      const agy = fakeAgy({ answer: "the answer" });
+      const { cfg, delegator } = makeDelegator({ spawn: agy.spawn, cfg: { askModel: true } });
+      const elicit: Elicit = async () => ({ action: "decline" });
+      const handler = createToolHandler(toolNamed("web_lookup"), cfg, delegator, () => elicit);
+      const res = await handler({ query: "docs" });
+      expect(res.isError).toBe(true);
+      expect(textOf(res)).toContain("declined");
+      expect(agy.runs).toHaveLength(0);
+      expect(delegator.status().preference).toBeNull();
+    });
+
+    it("gates fan-out too, before any leg runs", async () => {
+      const { handler, agy } = handlerFor("delegate_many", { askModel: true });
+      const res = await handler({ prompt: "x" });
+      expect(res.isError).toBe(true);
+      expect(textOf(res)).toContain("call `set_model`");
+      expect(agy.runs).toHaveLength(0);
     });
 
     it("rejects a model agy does not offer instead of saving it", async () => {

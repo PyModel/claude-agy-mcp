@@ -4,11 +4,16 @@ import { CapabilityCache, probeCapabilities, type Capabilities } from "./capabil
 import { loadConfig, timeoutFor, type Config } from "./config.js";
 import { FileCooldownStore } from "./cooldown-store.js";
 import { FilePreferenceStore } from "./preferences.js";
-import { Delegator, type Delegation } from "./delegation.js";
+import { Delegator, ModelNotChosenError, type Delegation } from "./delegation.js";
 import { ModelRegistry, listModels } from "./models.js";
 import { CooldownRegistry } from "./quota.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
-import type { ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
+import type {
+  ElicitRequestFormParams,
+  ElicitResult,
+  ServerNotification,
+  ServerRequest,
+} from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { ROUTING_ARGS, TOOLS, type ToolDef } from "./tools.js";
 
@@ -193,14 +198,87 @@ function renderFanout(
   );
 }
 
+/** Puts a form in front of the user; undefined when the client cannot show one. */
+export type Elicit = (params: ElicitRequestFormParams) => Promise<ElicitResult>;
+
+const EFFORTS = ["low", "medium", "high"] as const;
+
+/**
+ * Asks the user for the model and tier through the client's own UI, records the
+ * answer, and reports whether delegation may go ahead.
+ *
+ * The gate's error text asks the *agent* to put the question to the user, but an
+ * agent can just accept the default itself. A client that supports elicitation
+ * lets the server ask the user directly, which the agent cannot short-circuit.
+ */
+async function askUserForModel(delegator: Delegator, elicit: Elicit): Promise<string | null> {
+  const [suggested, available] = await Promise.all([
+    delegator.defaultChoice(),
+    delegator.availableModels(),
+  ]);
+  const names = available?.map((m) => m.name) ?? (suggested ? [suggested.model] : []);
+  if (names.length === 0) return null;
+  const defaultModel = suggested?.model ?? names[0]!;
+  const defaultEffort = suggested?.effort ?? "high";
+  const result = await elicit({
+    mode: "form",
+    message:
+      `Proceed with the default — ${defaultModel} at ${defaultEffort} effort — or change the ` +
+      "model or effort? This is asked once and saved for this machine.",
+    requestedSchema: {
+      type: "object",
+      properties: {
+        model: {
+          type: "string",
+          title: "Model",
+          oneOf: names.map((n) => ({ const: n, title: n })),
+          default: defaultModel,
+        },
+        effort: {
+          type: "string",
+          title: "Effort",
+          description: "Gemini models switch to the sibling at this tier.",
+          oneOf: EFFORTS.map((e) => ({ const: e, title: e })),
+          default: defaultEffort,
+        },
+      },
+      required: ["model"],
+    },
+  });
+  if (result.action !== "accept") {
+    return (
+      `The user ${result.action === "decline" ? "declined" : "cancelled"} the model choice, so ` +
+      "nothing was delegated. Ask them what they want, then call `set_model`, or set " +
+      "AGY_ASK_MODEL=false."
+    );
+  }
+  const content = (result.content ?? {}) as Record<string, unknown>;
+  const model = typeof content.model === "string" && content.model ? content.model : defaultModel;
+  const effort = EFFORTS.find((e) => e === content.effort);
+  await delegator.setPreference(model, effort);
+  return null;
+}
+
 export function createToolHandler(
   tool: ToolDef,
   cfg: Config,
   delegator: Delegator,
+  elicitFor: (extra?: HandlerExtra) => Elicit | undefined = () => undefined,
 ): (args: Record<string, unknown>, extra?: HandlerExtra) => Promise<ToolResponse> {
   const timeoutSec = timeoutFor(cfg, tool.name);
   return async (args, extra) => {
     const nonce = makeNonce();
+    const gated = async <T>(delegate: () => Promise<T>): Promise<T> => {
+      try {
+        return await delegate();
+      } catch (err) {
+        const elicit = elicitFor(extra);
+        if (!(err instanceof ModelNotChosenError) || !elicit) throw err;
+        const refusal = await askUserForModel(delegator, elicit);
+        if (refusal) throw new Error(refusal);
+        return await delegate();
+      }
+    };
     try {
       if (tool.kind === "status") {
         const available = await delegator.availableModels();
@@ -244,14 +322,14 @@ export function createToolHandler(
       };
 
       if (tool.kind === "fanout") {
-        const results = await delegator.runMany(base, fanoutLegs(args));
+        const results = await gated(() => delegator.runMany(base, fanoutLegs(args)));
         return {
           content: [{ type: "text", text: renderFanout(results, timeoutSec, nonce) }],
           isError: results.every((r) => r.error) || undefined,
         };
       }
 
-      const delegation = await delegator.run(base);
+      const delegation = await gated(() => delegator.run(base));
       const structured = structuredOf(delegation);
       return {
         content: [{ type: "text", text: renderDelegation(delegation, timeoutSec, nonce) }],
@@ -297,11 +375,16 @@ export function buildServer(cfg: Config, caps: Capabilities): McpServer {
   });
 
   const server = new McpServer({ name: "claude-agy-mcp", version: VERSION });
+  // Client capabilities are only known after the handshake, so look them up per call.
+  const elicitFor = (): Elicit | undefined =>
+    server.server.getClientCapabilities()?.elicitation
+      ? (params) => server.server.elicitInput(params)
+      : undefined;
   for (const tool of TOOLS) {
     server.registerTool(
       tool.name,
       { description: tool.description, inputSchema: tool.schema },
-      createToolHandler(tool, cfg, delegator),
+      createToolHandler(tool, cfg, delegator, elicitFor),
     );
   }
   return server;
