@@ -3,12 +3,19 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CapabilityCache, probeCapabilities, type Capabilities } from "./capabilities.js";
 import { loadConfig, timeoutFor, type Config } from "./config.js";
 import { FileCooldownStore } from "./cooldown-store.js";
+import { FilePreferenceStore } from "./preferences.js";
 import { Delegator, type Delegation } from "./delegation.js";
 import { ModelRegistry, listModels } from "./models.js";
 import { CooldownRegistry } from "./quota.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
+import { z } from "zod";
 import { ROUTING_ARGS, TOOLS, type ToolDef } from "./tools.js";
+
+const SET_MODEL_ARGS = z.object({
+  model: z.string().min(1),
+  effort: z.enum(["low", "medium", "high"]).optional(),
+});
 
 /** Keep in sync with package.json — test/server.test.ts fails if they drift. */
 export const VERSION = "2.0.0";
@@ -114,9 +121,20 @@ function progressReporter(extra: HandlerExtra | undefined) {
   };
 }
 
-function renderStatus(status: ReturnType<Delegator["status"]>, nonce: string): string {
+function renderStatus(
+  status: ReturnType<Delegator["status"]>,
+  available: { name: string }[] | null,
+  nonce: string,
+): string {
   const lines: string[] = [
     `agy ${status.agyVersion}`,
+    status.preference
+      ? `model choice (set_model): ${status.preference.model}` +
+        (status.preference.effort ? ` at ${status.preference.effort} effort` : "") +
+        ", placed ahead of every tool chain"
+      : status.askModel
+        ? "model choice (set_model): none yet — tools refuse to run until the user picks one"
+        : "model choice (set_model): none; AGY_ASK_MODEL is off, tool chains route on their own",
     status.missingFlags.length
       ? `flags this agy lacks: ${status.missingFlags.join(", ")}`
       : "all flags this bridge uses are supported",
@@ -139,6 +157,8 @@ function renderStatus(status: ReturnType<Delegator["status"]>, nonce: string): s
   for (const tool of TOOLS) {
     if (tool.chain) lines.push(`  ${tool.name}: ${tool.chain.join(" -> ")}`);
   }
+  lines.push("", available ? "models agy offers:" : "models agy offers: could not be listed");
+  for (const m of available ?? []) lines.push(`  ${m.name}`);
   return `[claude-agy-mcp ${nonce}] status\n${lines.join("\n")}`;
 }
 
@@ -183,7 +203,25 @@ export function createToolHandler(
     const nonce = makeNonce();
     try {
       if (tool.kind === "status") {
-        return { content: [{ type: "text", text: renderStatus(delegator.status(), nonce) }] };
+        const available = await delegator.availableModels();
+        return {
+          content: [{ type: "text", text: renderStatus(delegator.status(), available, nonce) }],
+        };
+      }
+      if (tool.kind === "configure") {
+        const choice = SET_MODEL_ARGS.parse(args);
+        const pref = await delegator.setPreference(choice.model, choice.effort);
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `[claude-agy-mcp ${nonce}] model set to ${pref.model}` +
+                (pref.effort ? ` at ${pref.effort} effort` : "") +
+                ". Saved for this machine; every tool routes to it first from now on.",
+            },
+          ],
+        };
       }
 
       const routing = ROUTING_ARGS.parse(args);
@@ -255,6 +293,7 @@ export async function createServer(): Promise<McpServer> {
 export function buildServer(cfg: Config, caps: Capabilities): McpServer {
   const delegator = new Delegator(cfg, new ModelRegistry(() => listModels(cfg.agyPath)), caps, {
     cooldowns: new CooldownRegistry(new FileCooldownStore()),
+    preferences: new FilePreferenceStore(),
   });
 
   const server = new McpServer({ name: "claude-agy-mcp", version: VERSION });

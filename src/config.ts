@@ -14,6 +14,11 @@ export interface Config {
   defaultModel: string | undefined;
   /** Reasoning tier applied when a tool does not ask for one. */
   defaultEffort: "low" | "medium" | "high" | undefined;
+  /**
+   * Refuse to delegate until the user has chosen a model and tier through
+   * `set_model`. The choice is stored per machine, so this asks once.
+   */
+  askModel: boolean;
   skipPermissions: boolean;
   sandbox: boolean;
   onFailure: "strict" | "fallback";
@@ -92,6 +97,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     maxOutputChars: positiveInt(env.AGY_MAX_OUTPUT_CHARS, 50_000),
     defaultModel: env.AGY_DEFAULT_MODEL || "gemini-flash@latest-high",
     defaultEffort: effort(env.AGY_EFFORT),
+    askModel: bool(env.AGY_ASK_MODEL, true),
     skipPermissions: env.AGY_SKIP_PERMISSIONS !== "false",
     sandbox: env.AGY_SANDBOX === "true",
     onFailure: env.AGY_ON_FAILURE === "strict" ? "strict" : "fallback",

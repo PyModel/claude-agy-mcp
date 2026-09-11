@@ -11,6 +11,7 @@ describe("loadConfig", () => {
       maxOutputChars: 50_000,
       defaultModel: "gemini-flash@latest-high",
       defaultEffort: undefined,
+      askModel: true,
       skipPermissions: true,
       sandbox: false,
       onFailure: "fallback",

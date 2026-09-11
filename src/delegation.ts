@@ -4,7 +4,12 @@ import { delegationDepth, type Config } from "./config.js";
 import { assertWithinRoots, redact } from "./egress.js";
 import type { AgyUsage, DeniedAction } from "./envelope.js";
 import { AgyFailure } from "./failure.js";
-import type { ModelRegistry } from "./models.js";
+import type { Effort, ModelInfo, ModelRegistry } from "./models.js";
+import {
+  MemoryPreferenceStore,
+  type ModelPreference,
+  type PreferenceStore,
+} from "./preferences.js";
 import { CooldownRegistry, QuotaError } from "./quota.js";
 import { runAgy, type RunnerDeps, type RunProgress } from "./runner.js";
 import { sessionFor, type ReadSessionsFile } from "./sessions.js";
@@ -57,7 +62,26 @@ export interface Delegation {
   redactions: number;
 }
 
+/** Thrown while AGY_ASK_MODEL is on and nobody has called `set_model` yet. */
+export class ModelNotChosenError extends Error {
+  constructor(available: ModelInfo[] | null) {
+    const listing = available
+      ? available.map((m) => `- ${m.name}`).join("\n")
+      : "- (agy models could not be listed; run `agy models` yourself)";
+    super(
+      "No model has been chosen for this machine yet. Ask the user which model and reasoning " +
+        "tier to use, then call `set_model` once — the choice is saved and this will not be asked " +
+        "again. Suggested default: Gemini 3.8 Flash (High). Models agy offers:\n" +
+        `${listing}\n` +
+        "Set AGY_ASK_MODEL=false to skip this and route on the built-in chains.",
+    );
+    this.name = "ModelNotChosenError";
+  }
+}
+
 export interface DelegationDeps extends RunnerDeps, WarmDeps {
+  /** Where the user\'s `set_model` choice lives; in memory unless given. */
+  preferences?: PreferenceStore;
   readSessions?: ReadSessionsFile;
   cooldowns?: CooldownRegistry;
 }
@@ -86,6 +110,7 @@ export class Delegator {
   private readonly admission: Admission;
   private readonly ledger: UsageLedger;
   private readonly warm: WarmSessions;
+  private readonly prefs: PreferenceStore;
   private readonly depth: number;
 
   constructor(
@@ -99,6 +124,7 @@ export class Delegator {
     this.admission = new Admission(cfg.maxConcurrency);
     this.ledger = new UsageLedger(cfg.budgetTokens);
     this.warm = new WarmSessions(cfg, caps, deps);
+    this.prefs = deps.preferences ?? new MemoryPreferenceStore();
     this.depth = delegationDepth(env);
   }
 
@@ -114,8 +140,12 @@ export class Delegator {
     queued: number;
     warm: ReturnType<WarmSessions["stats"]>;
     depth: number;
+    preference: ModelPreference | null;
+    askModel: boolean;
   } {
     return {
+      preference: this.prefs.load(),
+      askModel: this.cfg.askModel,
       agyVersion: this.caps.version,
       missingFlags: this.caps.missing,
       spent: this.ledger.spent,
@@ -127,6 +157,32 @@ export class Delegator {
       warm: this.warm.stats(),
       depth: this.depth,
     };
+  }
+
+  /** The models agy offers, or null when the listing could not be read. */
+  availableModels(): Promise<ModelInfo[] | null> {
+    return this.models.available();
+  }
+
+  /**
+   * Records the user's choice for every later call on this machine.
+   *
+   * The model is validated against the live listing; a tier that differs from
+   * the one in the model's name selects the sibling at that tier, so what is
+   * stored is exactly what will be passed to agy.
+   */
+  async setPreference(model: string, effort: Effort | undefined): Promise<ModelPreference> {
+    const { models, note } = await this.models.resolveChain({ explicit: model, chain: [] });
+    const resolved = models[0] ?? model;
+    const pick = (await this.models.forEffort(resolved, effort)) ?? { model: resolved };
+    const pref: ModelPreference = {
+      model: pick.model,
+      ...(effort ? { effort } : {}),
+      setAt: new Date().toISOString(),
+    };
+    this.prefs.save(pref);
+    if (note) console.error(`claude-agy-mcp: set_model: ${note}`);
+    return pref;
   }
 
   shutdown(): void {
@@ -161,6 +217,10 @@ export class Delegator {
   async run(req: DelegationRequest): Promise<Delegation> {
     this.assertMayDelegate(req);
     const prompt = req.tool.buildPrompt(req.args, req.cwd);
+    const pref = this.prefs.load();
+    if (this.cfg.askModel && !pref && !req.model && !req.conversationId) {
+      throw new ModelNotChosenError(await this.models.available());
+    }
 
     // Continuing a conversation reuses the model it was started with, unless the
     // caller pinned one — agy honours a model switch on a resumed conversation,
@@ -170,11 +230,14 @@ export class Delegator {
         ? { models: [undefined], note: undefined }
         : await this.models.resolveChain({
             explicit: req.model,
-            chain: req.tool.chain ?? [],
+            chain: [...(pref ? [pref.model] : []), ...(req.tool.chain ?? [])],
             defaultModel: this.cfg.defaultModel,
           });
+    const effort = req.effort ?? pref?.effort ?? req.tool.effort ?? this.cfg.defaultEffort;
 
-    return this.admission.run(req.conversationId, () => this.attempt(req, prompt, resolution));
+    return this.admission.run(req.conversationId, () =>
+      this.attempt(req, prompt, resolution, effort),
+    );
   }
 
   private finish(
@@ -188,6 +251,7 @@ export class Delegator {
     req: DelegationRequest,
     prompt: string,
     resolution: { models: (string | undefined)[]; note?: string },
+    effort: Effort | undefined,
   ): Promise<Delegation> {
     const attempts: string[] = [];
 
@@ -225,7 +289,16 @@ export class Delegator {
         continue;
       }
       try {
-        return await this.runOnce(req, prompt, model, attempts, resolution.note);
+        // A tiered model carries its own effort; a mismatch selects the sibling tier.
+        const pick = await this.models.forEffort(model, effort);
+        return await this.runOnce(
+          req,
+          prompt,
+          pick?.model,
+          pick?.effort,
+          attempts,
+          resolution.note,
+        );
       } catch (err) {
         if (err instanceof QuotaError && model) {
           this.cooldowns.set(model, err.resetSeconds);
@@ -253,6 +326,7 @@ export class Delegator {
     req: DelegationRequest,
     prompt: string,
     model: string | undefined,
+    effort: Effort | undefined,
     attempts: string[],
     note: string | undefined,
   ): Promise<Delegation> {
@@ -263,9 +337,7 @@ export class Delegator {
           cwd: req.cwd,
           ...(this.dirsFor(req).length ? { dirs: this.dirsFor(req) } : {}),
           ...(model ? { model } : {}),
-          ...((req.effort ?? req.tool.effort ?? this.cfg.defaultEffort)
-            ? { effort: (req.effort ?? req.tool.effort ?? this.cfg.defaultEffort)! }
-            : {}),
+          ...(effort ? { effort } : {}),
           mode: modeFor(req.tool, req.write),
           ...(req.sandbox !== undefined ? { sandbox: req.sandbox } : {}),
           ...(req.slashCommands !== undefined ? { slashCommands: req.slashCommands } : {}),

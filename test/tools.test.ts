@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { TOOLS, modeFor, resolveFiles } from "../src/tools.js";
 
 describe("TOOLS", () => {
-  it("defines the eight tools", () => {
+  it("defines the nine tools", () => {
     expect(TOOLS.map((t) => t.name).sort()).toEqual([
       "adversarial_review",
       "agy_status",
@@ -11,6 +11,7 @@ describe("TOOLS", () => {
       "delegate",
       "delegate_many",
       "follow_up",
+      "set_model",
       "web_lookup",
     ]);
   });
@@ -32,9 +33,10 @@ describe("TOOLS", () => {
 
   it("declares a model chain for every tool that picks its own model", () => {
     for (const t of TOOLS) {
-      // follow_up reuses the model of the session it continues, and agy_status
-      // never reaches agy at all, so neither declares a chain.
-      if (t.name === "follow_up" || t.name === "agy_status") expect(t.chain).toBeUndefined();
+      // follow_up reuses the model of the session it continues; agy_status and
+      // set_model never reach agy at all, so none of them declares a chain.
+      if (["follow_up", "agy_status", "set_model"].includes(t.name))
+        expect(t.chain).toBeUndefined();
       else expect(t.chain?.length).toBeGreaterThan(0);
     }
   });

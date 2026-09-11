@@ -161,6 +161,7 @@ export const testConfig: Config = {
   maxOutputChars: 50_000,
   defaultModel: undefined,
   defaultEffort: undefined,
+  askModel: false,
   skipPermissions: true,
   sandbox: false,
   onFailure: "fallback",

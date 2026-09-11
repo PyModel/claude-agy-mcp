@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   parseListing,
+  pickTier,
   describeModel,
   resolveEntry,
   ModelRegistry,
@@ -190,5 +191,42 @@ describe("listModels", () => {
     } finally {
       rmSync(stub, { force: true });
     }
+  });
+});
+
+describe("pickTier", () => {
+  const listing = parseListing(LISTING);
+
+  it("uses a tiered model as-is and sends no --effort when the tiers agree or none is asked", () => {
+    expect(pickTier("Gemini 3.8 Flash (High)", undefined, listing)).toEqual({
+      model: "Gemini 3.8 Flash (High)",
+    });
+    expect(pickTier("Gemini 3.8 Flash (High)", "high", listing)).toEqual({
+      model: "Gemini 3.8 Flash (High)",
+    });
+  });
+
+  it("selects the sibling at the asked tier within the same family and version", () => {
+    expect(pickTier("Gemini 3.8 Flash (High)", "medium", listing)).toEqual({
+      model: "Gemini 3.8 Flash (Medium)",
+    });
+    expect(pickTier("Gemini 3.1 Pro (High)", "low", listing)).toEqual({
+      model: "Gemini 3.1 Pro (Low)",
+    });
+  });
+
+  it("keeps the model when no sibling exists at that tier, still without --effort", () => {
+    expect(pickTier("Gemini 3.8 Flash (High)", "low", listing)).toEqual({
+      model: "Gemini 3.8 Flash (High)",
+    });
+  });
+
+  it("passes --effort through for a model with no tier in its name", () => {
+    const untiered = parseListing("gpt-oss-120b\tGPT-OSS 120B\n");
+    expect(pickTier("GPT-OSS 120B", "low", untiered)).toEqual({
+      model: "GPT-OSS 120B",
+      effort: "low",
+    });
+    expect(pickTier("GPT-OSS 120B", undefined, untiered)).toEqual({ model: "GPT-OSS 120B" });
   });
 });

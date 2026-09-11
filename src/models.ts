@@ -113,6 +113,40 @@ export function resolveEntry(entry: string, available: ModelInfo[]): string | un
   return best?.name;
 }
 
+export type Effort = "low" | "medium" | "high";
+
+/** A model name to pass agy, and the `--effort` to send with it, if any. */
+export interface TierPick {
+  model: string;
+  effort?: Effort;
+}
+
+/**
+ * Reconciles a requested effort with a model that may carry its own tier.
+ *
+ * agy 1.2.1 rejects `--effort` for any model whose name carries a tier
+ * ("Gemini 3.8 Flash (High)"), and rejects an id whose tier disagrees with
+ * `--effort`. So for a tiered model the tier *is* the effort: a different
+ * effort selects the sibling at that tier when one is listed, and `--effort`
+ * itself only travels with models that have no tier of their own.
+ */
+export function pickTier(
+  name: string,
+  effort: Effort | undefined,
+  available: ModelInfo[],
+): TierPick {
+  const info = available.find((m) => m.name === name);
+  if (!info || !info.effort) return effort ? { model: name, effort } : { model: name };
+  if (!effort || effort === info.effort) return { model: name };
+  const sibling = available.find(
+    (m) =>
+      m.family === info.family &&
+      m.version.join(".") === info.version.join(".") &&
+      m.effort === effort,
+  );
+  return { model: sibling?.name ?? name };
+}
+
 export interface ResolveOptions {
   explicit?: string;
   chain: string[];
@@ -153,6 +187,17 @@ export class ModelRegistry {
     if (result && result.length) this.listing = result;
     else this.pending = null; // transient failure — retry on the next call
     return result && result.length ? result : null;
+  }
+
+  /** `pickTier` against the live listing; passes the effort through when the listing is unreadable. */
+  async forEffort(
+    name: string | undefined,
+    effort: Effort | undefined,
+  ): Promise<TierPick | undefined> {
+    if (!name) return undefined;
+    const available = await this.available();
+    if (available === null) return effort ? { model: name, effort } : { model: name };
+    return pickTier(name, effort, available);
   }
 
   /**

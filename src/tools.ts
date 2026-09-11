@@ -34,7 +34,12 @@ const commonShape = {
   effort: z
     .enum(["low", "medium", "high"])
     .optional()
-    .describe("Reasoning effort, independent of the model. Defaults to the tool's own tier."),
+    .describe(
+      "Reasoning tier. Gemini models carry their tier in the name, so this switches to the " +
+        "sibling model at that tier (Flash (High) -> Flash (Medium)); agy's own --effort flag " +
+        "only reaches models without a tier. Defaults to the user's set_model choice, else the " +
+        "tool's own tier.",
+    ),
   slash_commands: z
     .boolean()
     .optional()
@@ -80,7 +85,7 @@ type ToolSchema = z.ZodObject<z.ZodRawShape>;
 export type Privilege = "read-only" | "caller-chooses";
 
 /** What the server does with the call, beyond turning arguments into a prompt. */
-export type ToolKind = "delegate" | "fanout" | "status";
+export type ToolKind = "delegate" | "fanout" | "status" | "configure";
 
 export interface ToolDef {
   name: string;
@@ -91,7 +96,10 @@ export interface ToolDef {
   chain?: string[];
   privilege: Privilege;
   kind: ToolKind;
-  /** The tool's own reasoning tier, overridden by an explicit `effort` argument. */
+  /**
+   * The tool's own reasoning tier, overridden by an explicit `effort` argument.
+   * None of the built-in tools set one: their chains carry the tier in the selector.
+   */
   effort?: "low" | "medium" | "high";
   /** Validates `args` against `schema`, then renders the agy prompt. */
   buildPrompt(args: unknown, cwd: string): string;
@@ -171,7 +179,6 @@ export const TOOLS: ToolDef[] = [
     }),
     chain: ["gemini-flash@latest-high", "gemini-flash@latest-medium"],
     privilege: "read-only",
-    effort: "medium",
     prompt(args) {
       return (
         `Search this repository to answer the following. Use git log, git diff, git blame, ` +
@@ -193,7 +200,6 @@ export const TOOLS: ToolDef[] = [
     }),
     chain: ["gemini-flash@latest-high", "gemini-flash@latest-medium"],
     privilege: "read-only",
-    effort: "medium",
     prompt(args) {
       return `Look up on the web: ${args.query}\n\nInclude source URLs for key claims. ${OUTPUT_RULES}`;
     },
@@ -228,7 +234,6 @@ export const TOOLS: ToolDef[] = [
       }),
     chain: ["gemini-flash@latest-high", "gemini-pro@latest-high", "claude-opus@latest"],
     privilege: "read-only",
-    effort: "high",
     paths: (args, cwd) => resolveFiles(args.files ?? [], cwd),
     prompt(args, cwd) {
       const subject = args.content
@@ -318,11 +323,38 @@ export const TOOLS: ToolDef[] = [
     },
   }),
   defineTool({
+    name: "set_model",
+    description:
+      "Choose the model and reasoning tier every tool uses from now on, on this machine. Ask the " +
+      "user first — call agy_status for the models agy offers — then call this once; the choice " +
+      "is saved and no tool asks again. An explicit `model` argument on a call still wins for " +
+      "that call. Set AGY_ASK_MODEL=false to skip the gate and route on the built-in chains.",
+    schema: z.object({
+      model: z
+        .string()
+        .min(1)
+        .describe(
+          'The model the user chose: a display name ("Gemini 3.8 Flash (High)"), an id ' +
+            '("gemini-3.8-flash-high"), or a family selector ("gemini-flash@latest-high").',
+        ),
+      effort: z
+        .enum(["low", "medium", "high"])
+        .optional()
+        .describe("The tier the user chose. Omit to take the tier the model name carries."),
+    }),
+    privilege: "read-only",
+    kind: "configure",
+    prompt() {
+      return "";
+    },
+  }),
+  defineTool({
     name: "agy_status",
     description:
       "What this bridge has spent and what it can still do: tokens by model, live quota " +
-      "cooldowns, runs in flight, the resolved model chain per tool, warm sessions, and the " +
-      "agy version and flags detected at startup. Check this before a large fan-out.",
+      "cooldowns, runs in flight, the resolved model chain per tool, the user's set_model " +
+      "choice, the models agy offers, warm sessions, and the agy version and flags detected " +
+      "at startup. Check this before a large fan-out, or to list models before set_model.",
     schema: z.object({}),
     privilege: "read-only",
     kind: "status",

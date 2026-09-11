@@ -3,18 +3,14 @@
 <img src="https://raw.githubusercontent.com/PyModel/claude-agy-mcp/main/assets/banner.svg" alt="claude-agy-mcp — Claude Code delegates heavy tasks to the Antigravity CLI" width="100%">
 
 <p>
-  <a href="https://github.com/PyModel/claude-agy-mcp/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/PyModel/claude-agy-mcp/ci.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&label=CI&labelColor=1b1f27&color=22c55e"></a>
-  <a href="https://www.npmjs.com/package/@pymodel/claude-agy-mcp"><img alt="npm version" src="https://img.shields.io/npm/v/@pymodel/claude-agy-mcp?style=for-the-badge&logo=npm&logoColor=white&label=npm&labelColor=1b1f27&color=cb3837"></a>
-  <a href="https://www.npmjs.com/package/@pymodel/claude-agy-mcp"><img alt="npm downloads" src="https://img.shields.io/npm/dm/@pymodel/claude-agy-mcp?style=for-the-badge&logo=npm&logoColor=white&label=downloads&labelColor=1b1f27&color=4E86F5"></a>
-  <a href="https://nodejs.org"><img alt="node" src="https://img.shields.io/node/v/@pymodel/claude-agy-mcp?style=for-the-badge&logo=nodedotjs&logoColor=white&label=node&labelColor=1b1f27&color=339933"></a>
-  <a href="LICENSE"><img alt="license" src="https://img.shields.io/npm/l/@pymodel/claude-agy-mcp?style=for-the-badge&logo=opensourceinitiative&logoColor=white&label=license&labelColor=1b1f27&color=9B72CB"></a>
-  <img alt="visitors" src="https://komarev.com/ghpvc/?username=pymodel-claude-agy-mcp&label=VISITORS&color=blueviolet&style=for-the-badge">
+  <a href="https://www.npmjs.com/package/@pymodel/claude-agy-mcp"><img alt="npm downloads" src="https://img.shields.io/npm/dm/@pymodel/claude-agy-mcp?style=flat&logo=npm&logoColor=white&label=downloads&labelColor=1b1f27&color=4E86F5"></a>
+  <img alt="visitors" src="https://komarev.com/ghpvc/?username=pymodel-claude-agy-mcp&label=visitors&color=blueviolet&style=flat">
 </p>
 
 <p>
-  <a href="https://claude.com/claude-code"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-Orchestrator-e0a83c?style=for-the-badge&logo=anthropic&logoColor=white&labelColor=1b1f27"></a>
-  <a href="https://gemini.google.com"><img alt="Gemini 3.7 Flash" src="https://img.shields.io/badge/Gemini_3.7_Flash-Implementer-4E86F5?style=for-the-badge&logo=googlegemini&logoColor=white&labelColor=1b1f27"></a>
-  <a href="https://modelcontextprotocol.io"><img alt="MCP" src="https://img.shields.io/badge/MCP-Protocol-D96570?style=for-the-badge&logo=modelcontextprotocol&logoColor=white&labelColor=1b1f27"></a>
+  <a href="https://claude.com/claude-code"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-Orchestrator-e0a83c?style=flat&logo=anthropic&logoColor=white&labelColor=1b1f27"></a>
+  <a href="https://gemini.google.com"><img alt="Gemini 3.8 Flash" src="https://img.shields.io/badge/Gemini_3.8_Flash-Implementer-4E86F5?style=flat&logo=googlegemini&logoColor=white&labelColor=1b1f27"></a>
+  <a href="https://modelcontextprotocol.io"><img alt="MCP" src="https://img.shields.io/badge/MCP-Protocol-D96570?style=flat&logo=modelcontextprotocol&logoColor=white&labelColor=1b1f27"></a>
 </p>
 
 <p>
@@ -177,18 +173,19 @@ curl -o CLAUDE.md https://raw.githubusercontent.com/PyModel/claude-agy-mcp/main/
 
 ## Tools
 
-| Tool                 | Use for                                                         | Model routing (first available)                                              |
-| -------------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `analyze_files`      | Files >200 lines, >3 files at once, logs, dumps, generated code | `gemini-flash@latest-high` → `gemini-pro@latest-low`                         |
-| `deep_search`        | git log/diff/blame archaeology, repo-wide greps                 | `gemini-flash@latest-high` → `gemini-flash@latest-medium`                    |
-| `web_lookup`         | Docs, API references, external/current knowledge                | `gemini-flash@latest-high` → `gemini-flash@latest-medium`                    |
-| `adversarial_review` | Plan critiques, design and code reviews                         | `gemini-flash@latest-high` → `gemini-pro@latest-high` → `claude-opus@latest` |
-| `follow_up`          | Continue a prior session by `session_id` — no context resend    | inherits the session                                                         |
-| `delegate`           | Anything else heavy (read-only unless `write: true`)            | `gemini-flash@latest-high` → `gemini-pro@latest-low`                         |
-| `delegate_many`      | One question to a council of models, or N sub-tasks at once     | `gemini-flash@latest-high` → `gemini-pro@latest-high` → `claude-opus@latest` |
-| `agy_status`         | Spend, cooldowns, in-flight runs, resolved chains, agy version  | never reaches agy                                                            |
+| Tool                 | Use for                                                            | Model routing (first available)                                              |
+| -------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| `analyze_files`      | Files >200 lines, >3 files at once, logs, dumps, generated code    | `gemini-flash@latest-high` → `gemini-pro@latest-low`                         |
+| `deep_search`        | git log/diff/blame archaeology, repo-wide greps                    | `gemini-flash@latest-high` → `gemini-flash@latest-medium`                    |
+| `web_lookup`         | Docs, API references, external/current knowledge                   | `gemini-flash@latest-high` → `gemini-flash@latest-medium`                    |
+| `adversarial_review` | Plan critiques, design and code reviews                            | `gemini-flash@latest-high` → `gemini-pro@latest-high` → `claude-opus@latest` |
+| `follow_up`          | Continue a prior session by `session_id` — no context resend       | inherits the session                                                         |
+| `delegate`           | Anything else heavy (read-only unless `write: true`)               | `gemini-flash@latest-high` → `gemini-pro@latest-low`                         |
+| `delegate_many`      | One question to a council of models, or N sub-tasks at once        | `gemini-flash@latest-high` → `gemini-pro@latest-high` → `claude-opus@latest` |
+| `set_model`          | Record the user's model + tier once; every tool routes to it first | never reaches agy                                                            |
+| `agy_status`         | Spend, cooldowns, in-flight runs, resolved chains, agy version     | never reaches agy                                                            |
 
-All tools accept optional `cwd` (project root), `dirs` (extra workspace roots, for cross-repo or worktree-vs-base work), `model`, `effort` (`low`/`medium`/`high`, independent of the model), and `slash_commands` (off by default, so a hostile file in the workspace cannot steer the delegated model through your own skills). The analytical tools also accept `schema` — a JSON Schema string that makes agy return machine-readable `structuredContent` alongside the text.
+All tools accept optional `cwd` (project root), `dirs` (extra workspace roots, for cross-repo or worktree-vs-base work), `model`, `effort` (`low`/`medium`/`high` — see [Effort and tiers](#effort-and-tiers)), and `slash_commands` (off by default, so a hostile file in the workspace cannot steer the delegated model through your own skills). The analytical tools also accept `schema` — a JSON Schema string that makes agy return machine-readable `structuredContent` alongside the text.
 
 Every response is **fenced with a per-call nonce**, with the metadata in a header before the payload:
 
@@ -204,6 +201,28 @@ The nonce is why the fence is worth anything: the metadata used to be appended _
 ### Model routing
 
 On first use the bridge runs `agy models` (cached for the process lifetime) and resolves each chain entry against the live listing. Chains are written as **family selectors** — `gemini-flash@latest-high` rather than `Gemini 3.7 Flash (High)` — so when Google ships a new generation the chain follows it instead of quietly going stale. A selector is `family@latest[-effort]` or `family@3.7[-effort]`; an exact display name (`Gemini 3.8 Flash (High)`) and an id (`gemini-3.8-flash-high`) both work too. `AGY_DEFAULT_MODEL` is appended to every chain as a last resort. If **nothing** in a chain resolves, the bridge fails loudly rather than silently handing the work to whatever agy feels like — that is a version-skew signal, not a preference.
+
+### Choose the model once
+
+By default (`AGY_ASK_MODEL=true`) the bridge refuses to delegate until the user has picked a model
+and tier. The first call to any tool returns an error listing the models agy offers and asking the
+agent to put the choice to the user, then call **`set_model`** once. The choice is written to
+`$XDG_CONFIG_HOME/claude-agy-mcp/preferences.json` (`~/.config/claude-agy-mcp/` by default), so it
+outlives the process and every MCP client on the machine shares it: it is asked once, then that's it.
+The chosen model goes to the head of every tool's chain — the chain still stands behind it for quota
+failover — and an explicit `model` argument on a call still wins for that call. `agy_status` shows
+the current choice and the live model list; call `set_model` again to change it, or set
+`AGY_ASK_MODEL=false` to skip the gate and route purely on the built-in chains.
+
+### Effort and tiers
+
+agy 1.2.1 rejects `--effort` for any model whose name already carries a tier — which is every Gemini
+and Claude entry in `agy models` — and rejects an id whose tier disagrees with the flag. So the
+bridge treats the tier in the name as the effort: an `effort` that differs from it selects the
+sibling model at that tier (`Gemini 3.8 Flash (High)` + `effort: medium` → `Gemini 3.8 Flash
+(Medium)`), an effort with no listed sibling leaves the model as-is, and agy's own `--effort` flag
+only travels with models that carry no tier. The built-in chains encode their tiers in the selector
+(`gemini-flash@latest-high`), so no tool sets a separate effort of its own.
 
 ### Quota-aware failover
 
@@ -242,7 +261,8 @@ All optional, via environment variables:
 | `AGY_TIMEOUT_<TOOL>`       | `AGY_MAX_RUNTIME`          | Seconds; overrides the ceiling for a single tool, e.g. `AGY_TIMEOUT_DEEP_SEARCH=900`. Wins over `AGY_TIMEOUT` |
 | `AGY_MAX_OUTPUT_CHARS`     | `50000`                    | Truncation cap for tool output                                                                                |
 | `AGY_DEFAULT_MODEL`        | `gemini-flash@latest-high` | Appended to every chain as a last resort                                                                      |
-| `AGY_EFFORT`               | agy's own default          | `low` \| `medium` \| `high`, applied when a tool does not ask for a tier                                      |
+| `AGY_ASK_MODEL`            | `true`                     | Refuse to delegate until the user has chosen a model via `set_model` (asked once, saved per machine)          |
+| `AGY_EFFORT`               | agy's own default          | `low` \| `medium` \| `high` fallback tier; selects the sibling model at that tier (see Effort and tiers)      |
 | `AGY_SKIP_PERMISSIONS`     | `true`                     | Pass `--dangerously-skip-permissions` to agy                                                                  |
 | `AGY_SANDBOX`              | `false`                    | Run agy with `--sandbox`                                                                                      |
 | `AGY_ON_FAILURE`           | `fallback`                 | `strict` appends an instruction to failed-tool errors telling the calling agent not to absorb the work itself |
