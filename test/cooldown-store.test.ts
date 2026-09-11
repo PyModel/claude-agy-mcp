@@ -60,9 +60,18 @@ describe("FileCooldownStore", () => {
   });
 
   it("degrades quietly when the cache dir cannot be written", () => {
-    const store = new FileCooldownStore("/proc/nope/nope");
-    expect(() => store.save({ A: 1 }, 0)).not.toThrow();
-    expect(store.load()).toEqual({ A: 1 }); // still honoured in this process
+    // A regular file in the directory's place: mkdir fails with ENOTDIR on
+    // every platform. (Not /proc/...: on Linux mkdir there reports ENOENT with
+    // the parent present, which sends Node's recursive mkdir into a loop.)
+    const { dir, cleanup } = scratch();
+    try {
+      writeFileSync(path.join(dir, "file"), "");
+      const store = new FileCooldownStore(path.join(dir, "file", "nope"));
+      expect(() => store.save({ A: 1 }, 0)).not.toThrow();
+      expect(store.load()).toEqual({ A: 1 }); // still honoured in this process
+    } finally {
+      cleanup();
+    }
   });
 });
 
