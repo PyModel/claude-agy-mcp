@@ -217,6 +217,12 @@ failover — and an explicit `model` argument on a call still wins for that call
 the current choice and the live model list; call `set_model` again to change it, or set
 `AGY_ASK_MODEL=false` to skip the gate and route purely on the built-in chains.
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/PyModel/claude-agy-mcp/main/assets/set-model-prompt.png" alt="Claude Code showing the claude-agy-mcp model form: Proceed with the default — Gemini 3.8 Flash (High) at high effort — or change? with Model and Effort pickers and Accept / Decline" width="720">
+  <br>
+  <sub>The form as Claude Code renders it on first use — the server asks, not the agent.</sub>
+</p>
+
 ### Effort and tiers
 
 agy 1.2.1 rejects `--effort` for any model whose name already carries a tier — which is every Gemini
