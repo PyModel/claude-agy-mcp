@@ -56,7 +56,7 @@ User → Claude Code → claude-agy-mcp (MCP) → agy CLI → Gemini 3.7 Flash /
 
 **Gemini Flash** is Google's most intelligent workhorse model for coding and agentic execution. It applies deep multi-step planning, rigorous terminal reasoning, and high first-pass code accuracy.
 
-> The benchmark table below compares the generation that was current when it was written (3.7 Flash against 3.6 Flash). The bridge does not pin that generation: its chains say `gemini-flash@latest-high`, so it routes to whatever the newest Flash in `agy models` is — 3.8 Flash at the time of writing.
+> **Gemini 3.8 Flash (High) is the default model for every tool.** Each chain leads with `gemini-flash@latest-high`, which resolves against `agy models` to the newest Flash at High effort — 3.8 Flash as of 2026-09-11 — and only falls back to Pro or Claude when Flash is unavailable or cooling down. The benchmark table below compares the generation that was current when it was written (3.7 Flash against 3.6 Flash); the bridge does not pin that generation.
 
 ### Benchmark Highlights
 
@@ -180,12 +180,12 @@ curl -o CLAUDE.md https://raw.githubusercontent.com/PyModel/claude-agy-mcp/main/
 | Tool                 | Use for                                                         | Model routing (first available)                                              |
 | -------------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | `analyze_files`      | Files >200 lines, >3 files at once, logs, dumps, generated code | `gemini-flash@latest-high` → `gemini-pro@latest-low`                         |
-| `deep_search`        | git log/diff/blame archaeology, repo-wide greps                 | `gemini-flash@latest-medium` → `gemini-flash@latest-high`                    |
-| `web_lookup`         | Docs, API references, external/current knowledge                | `gemini-flash@latest-medium` → `gemini-flash@latest-high`                    |
-| `adversarial_review` | Plan critiques, design and code reviews                         | `gemini-pro@latest-high` → `claude-opus@latest` → `gemini-flash@latest-high` |
+| `deep_search`        | git log/diff/blame archaeology, repo-wide greps                 | `gemini-flash@latest-high` → `gemini-flash@latest-medium`                    |
+| `web_lookup`         | Docs, API references, external/current knowledge                | `gemini-flash@latest-high` → `gemini-flash@latest-medium`                    |
+| `adversarial_review` | Plan critiques, design and code reviews                         | `gemini-flash@latest-high` → `gemini-pro@latest-high` → `claude-opus@latest` |
 | `follow_up`          | Continue a prior session by `session_id` — no context resend    | inherits the session                                                         |
 | `delegate`           | Anything else heavy (read-only unless `write: true`)            | `gemini-flash@latest-high` → `gemini-pro@latest-low`                         |
-| `delegate_many`      | One question to a council of models, or N sub-tasks at once     | `gemini-pro@latest-high` → `claude-opus@latest` → `gemini-flash@latest-high` |
+| `delegate_many`      | One question to a council of models, or N sub-tasks at once     | `gemini-flash@latest-high` → `gemini-pro@latest-high` → `claude-opus@latest` |
 | `agy_status`         | Spend, cooldowns, in-flight runs, resolved chains, agy version  | never reaches agy                                                            |
 
 All tools accept optional `cwd` (project root), `dirs` (extra workspace roots, for cross-repo or worktree-vs-base work), `model`, `effort` (`low`/`medium`/`high`, independent of the model), and `slash_commands` (off by default, so a hostile file in the workspace cannot steer the delegated model through your own skills). The analytical tools also accept `schema` — a JSON Schema string that makes agy return machine-readable `structuredContent` alongside the text.
@@ -256,14 +256,18 @@ All optional, via environment variables:
 | `AGY_WARM_IDLE_SEC`        | `300`                      | Kill a resident session after this long idle                                                                  |
 
 > [!WARNING]
-> **`AGY_SKIP_PERMISSIONS` is a real grant, but privilege is now per tool.** It defaults to `true`
-> so agy cannot block forever on an interactive approval prompt in a non-interactive MCP context.
-> What it grants is bounded by the tool: `analyze_files`, `deep_search`, `web_lookup`,
-> `adversarial_review` and `follow_up` always run `--mode plan`, so agy may read and search but its
-> write and execute actions come back to you in a **denied-actions** note — proof the run changed
-> nothing, rather than a promise. Only `delegate` can be given write access, and only when you pass
-> `write: true` explicitly; `sandbox: true` adds `--sandbox` on top. Set `AGY_ALLOWED_ROOTS` to stop
-> any call reaching outside the directories you nominate.
+> **`AGY_SKIP_PERMISSIONS` is a real grant, and agy does not enforce read-only on top of it.** It
+> defaults to `true` because headless agy auto-denies _every_ permissioned tool without it — including
+> `read_file` — and a single denial ends the run with an empty response, so a bridge without the grant
+> cannot read, search or fetch anything. `analyze_files`, `deep_search`, `web_lookup`,
+> `adversarial_review` and `follow_up` pass `--mode plan`, but **verified against agy 1.2.1 on
+> 2026-09-11: plan mode is advisory once permissions are skipped.** agy wrote a file through
+> `write_to_file` in a `--mode plan --dangerously-skip-permissions` run, with and without slash-command
+> expansion. Treat every run as having the access of the user running the bridge; the prompt tells the
+> read-only tools not to write, and the **denied-actions** note only appears when the grant is off.
+> `delegate` adds `--mode accept-edits` with `write: true` and `--sandbox` with `sandbox: true`; the
+> sandbox is a terminal restriction, not a permission boundary. Set `AGY_ALLOWED_ROOTS` to stop any
+> call reaching outside the directories you nominate — that check runs in the bridge, before agy.
 
 ### Failure behavior
 

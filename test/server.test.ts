@@ -242,7 +242,7 @@ describe("createToolHandler", () => {
     const text = textOf(await handler({}));
     expect(text).toContain("agy 1.2.0");
     expect(text).toContain("quota cooldowns: none");
-    expect(text).toContain("adversarial_review: gemini-pro@latest-high");
+    expect(text).toContain("adversarial_review: gemini-flash@latest-high");
     expect(agy.runs).toHaveLength(0);
   });
 

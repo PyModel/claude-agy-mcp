@@ -67,14 +67,14 @@ describe("Delegator", () => {
   });
 
   it("fails over to the next chain model on quota exhaustion", async () => {
-    const agy = agyWhere(["Gemini 3.8 Flash (Medium)"]);
+    const agy = agyWhere(["Gemini 3.8 Flash (High)"]);
     const d = await delegatorFor(agy).run(request("web_lookup", { query: "docs" }));
     expect(agy.runs.map(agy.modelOf)).toEqual([
-      "Gemini 3.8 Flash (Medium)",
       "Gemini 3.8 Flash (High)",
+      "Gemini 3.8 Flash (Medium)",
     ]);
-    expect(d.model).toBe("Gemini 3.8 Flash (High)");
-    expect(d.attempts).toEqual(["Gemini 3.8 Flash (Medium): quota exhausted (resets in 4h24m)"]);
+    expect(d.model).toBe("Gemini 3.8 Flash (Medium)");
+    expect(d.attempts).toEqual(["Gemini 3.8 Flash (High): quota exhausted (resets in 4h24m)"]);
   });
 
   it("does NOT fail over when the failure is the request's fault, not the model's", async () => {
@@ -89,14 +89,14 @@ describe("Delegator", () => {
   });
 
   it("skips a cooling model on the next call without spawning it", async () => {
-    const agy = agyWhere(["Gemini 3.8 Flash (Medium)"]);
+    const agy = agyWhere(["Gemini 3.8 Flash (High)"]);
     const delegator = delegatorFor(agy);
     await delegator.run(request("web_lookup", { query: "first" }));
     const second = await delegator.run(request("web_lookup", { query: "second" }));
     expect(agy.runs).toHaveLength(3);
-    expect(agy.modelOf(agy.runs[2]!)).toBe("Gemini 3.8 Flash (High)");
+    expect(agy.modelOf(agy.runs[2]!)).toBe("Gemini 3.8 Flash (Medium)");
     expect(second.attempts).toEqual([
-      expect.stringMatching(/Gemini 3\.8 Flash \(Medium\): quota cooldown, .* left/),
+      expect.stringMatching(/Gemini 3\.8 Flash \(High\): quota cooldown, .* left/),
     ]);
   });
 
@@ -390,13 +390,13 @@ describe("Delegator warm sessions", () => {
 
 describe("Delegator.status", () => {
   it("reports spend, cooldowns and the agy it probed", async () => {
-    const agy = agyWhere(["Gemini 3.8 Flash (Medium)"]);
+    const agy = agyWhere(["Gemini 3.8 Flash (High)"]);
     const delegator = delegatorFor(agy);
     await delegator.run(request("web_lookup", { query: "x" }));
     const s = delegator.status();
     expect(s.agyVersion).toBe("1.2.0");
     expect(s.spent).toBeGreaterThan(0);
-    expect(s.cooldowns.map((c) => c.model)).toEqual(["Gemini 3.8 Flash (Medium)"]);
+    expect(s.cooldowns.map((c) => c.model)).toEqual(["Gemini 3.8 Flash (High)"]);
     expect(s.depth).toBe(0);
   });
 });

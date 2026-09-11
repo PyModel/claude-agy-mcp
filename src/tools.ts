@@ -169,7 +169,7 @@ export const TOOLS: ToolDef[] = [
       ...commonShape,
       ...structuredShape,
     }),
-    chain: ["gemini-flash@latest-medium", "gemini-flash@latest-high"],
+    chain: ["gemini-flash@latest-high", "gemini-flash@latest-medium"],
     privilege: "read-only",
     effort: "medium",
     prompt(args) {
@@ -191,7 +191,7 @@ export const TOOLS: ToolDef[] = [
       ...commonShape,
       ...structuredShape,
     }),
-    chain: ["gemini-flash@latest-medium", "gemini-flash@latest-high"],
+    chain: ["gemini-flash@latest-high", "gemini-flash@latest-medium"],
     privilege: "read-only",
     effort: "medium",
     prompt(args) {
@@ -226,7 +226,7 @@ export const TOOLS: ToolDef[] = [
       .refine((a) => Boolean(a.content) || Boolean(a.files?.length), {
         message: "adversarial_review requires either `content` or `files`.",
       }),
-    chain: ["gemini-pro@latest-high", "claude-opus@latest", "gemini-flash@latest-high"],
+    chain: ["gemini-flash@latest-high", "gemini-pro@latest-high", "claude-opus@latest"],
     privilege: "read-only",
     effort: "high",
     paths: (args, cwd) => resolveFiles(args.files ?? [], cwd),
@@ -310,7 +310,7 @@ export const TOOLS: ToolDef[] = [
       .refine((a) => Boolean(a.prompt) || Boolean(a.tasks?.length), {
         message: "delegate_many requires either `prompt` or `tasks`.",
       }),
-    chain: ["gemini-pro@latest-high", "claude-opus@latest", "gemini-flash@latest-high"],
+    chain: ["gemini-flash@latest-high", "gemini-pro@latest-high", "claude-opus@latest"],
     privilege: "read-only",
     kind: "fanout",
     prompt(args) {
