@@ -412,6 +412,19 @@ describe("createToolHandler", () => {
     expect(agy.runs).toHaveLength(0);
   });
 
+  it("strict mode marks a fan-out whose every leg failed, like any other failure", async () => {
+    const { handler } = handlerFor("delegate_many", { onFailure: "strict" }, exploding());
+    const res = await handler({ prompt: "q", models: ["Gemini 3.8 Flash (High)"] });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain("0 of 1 legs answered");
+    expect(textOf(res)).toContain("strict mode");
+  });
+
+  it("names the conversation's own model for a warm answer instead of agy's default", () => {
+    const text = renderDelegation(delegation({ model: undefined, warm: true }), 60, "n");
+    expect(text).toContain("model: the conversation's own | warm session");
+  });
+
   it("fans one prompt out to several models and labels each leg", async () => {
     const agy = fakeAgy((args) => ({ answer: `answer from ${valueOf(args, "--model")}` }));
     const { handler } = handlerFor("delegate_many", {}, agy);

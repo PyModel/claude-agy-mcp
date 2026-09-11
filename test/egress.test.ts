@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { assertWithinRoots, PathNotAllowedError, redact } from "../src/egress.js";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { assertWithinRoots, canonical, PathNotAllowedError, redact } from "../src/egress.js";
 
 describe("assertWithinRoots", () => {
   it("allows anything when no roots are configured", () => {
@@ -25,6 +28,26 @@ describe("assertWithinRoots", () => {
 
   it("is not fooled by a sibling directory sharing the root's prefix", () => {
     expect(() => assertWithinRoots(["/repo-secrets/x"], ["/repo"])).toThrow(PathNotAllowedError);
+  });
+
+  it("follows a symlink inside the root to where it really points", () => {
+    const base = mkdtempSync(path.join(tmpdir(), "egress-"));
+    try {
+      const root = path.join(base, "repo");
+      const outside = path.join(base, "outside");
+      mkdirSync(root);
+      mkdirSync(outside);
+      symlinkSync(outside, path.join(root, "link"));
+      expect(() => assertWithinRoots([path.join(root, "link", "x")], [root])).toThrow(
+        PathNotAllowedError,
+      );
+      expect(() => assertWithinRoots([path.join(root, "real", "x")], [root])).not.toThrow();
+      expect(canonical(path.join(root, "link", "new", "file"))).toBe(
+        path.join(canonical(outside), "new", "file"),
+      );
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 });
 

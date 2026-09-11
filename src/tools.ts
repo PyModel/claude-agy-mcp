@@ -96,11 +96,6 @@ export interface ToolDef {
   chain?: string[];
   privilege: Privilege;
   kind: ToolKind;
-  /**
-   * The tool's own reasoning tier, overridden by an explicit `effort` argument.
-   * None of the built-in tools set one: their chains carry the tier in the selector.
-   */
-  effort?: "low" | "medium" | "high";
   /** Validates `args` against `schema`, then renders the agy prompt. */
   buildPrompt(args: unknown, cwd: string): string;
   /** Extra workspace roots this tool's own arguments imply. */
@@ -121,7 +116,6 @@ function defineTool<S extends ToolSchema>(def: {
   chain?: string[];
   privilege: Privilege;
   kind?: ToolKind;
-  effort?: "low" | "medium" | "high";
   prompt(args: z.output<S>, cwd: string): string;
   paths?(args: z.output<S>, cwd: string): string[];
 }): ToolDef {

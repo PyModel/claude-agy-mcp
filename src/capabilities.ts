@@ -89,15 +89,3 @@ export async function probeCapabilities(
     return degradedCapabilities((err as Error).message);
   }
 }
-
-/** Probes once per process; a failed probe is not cached. */
-export class CapabilityCache {
-  private pending: Promise<Capabilities> | null = null;
-
-  constructor(private readonly probe: () => Promise<Capabilities>) {}
-
-  get(): Promise<Capabilities> {
-    this.pending ??= this.probe();
-    return this.pending;
-  }
-}

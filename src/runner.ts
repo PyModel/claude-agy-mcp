@@ -91,7 +91,11 @@ export type SpawnAgy = (file: string, args: string[], opts: SpawnOptions) => Agy
 export interface RunTiming {
   /** How often to scan the run log for quota errors and drain streamed progress. */
   pollMs?: number;
-  /** Extra wait beyond agy's own --print-timeout before we hard-kill. */
+  /**
+   * Extra wait beyond agy's own --print-timeout before we hard-kill, and, with
+   * `killGraceMs`, how long a killed child is given to exit before its output is
+   * taken as final and its log removed.
+   */
   graceMs?: number;
   /** Delay between SIGTERM and SIGKILL escalation. */
   killGraceMs?: number;
@@ -257,6 +261,8 @@ function answerOf(envelope: AgyEnvelope | null, stdout: string): string {
   return stdout.trim();
 }
 
+const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms).unref?.());
+
 function outputFormatFor(req: RunRequest, caps: Capabilities): "json" | "stream-json" | undefined {
   if (!caps.has("--output-format")) return undefined;
   return req.onProgress ? "stream-json" : "json";
@@ -277,15 +283,20 @@ export async function runAgy(
   const logPath = makeLogPath();
   const outputFormat = outputFormatFor(req, caps);
   const tail = new LogTail(logPath);
+  // A killed child gets this long to exit before its output is taken as final.
+  const reapMs = killGraceMs + graceMs;
   let timedOut = false;
   let trailingLog = "";
+  let child: AgyProcess | undefined;
+  let exited = false;
 
   const finished = await new Promise<{ stdout: string; stderr: string; code: number | null }>(
     (resolve, reject) => {
-      const child = spawnAgy(cfg.agyPath, buildArgs(req, cfg, { logPath, caps, outputFormat }), {
+      child = spawnAgy(cfg.agyPath, buildArgs(req, cfg, { logPath, caps, outputFormat }), {
         cwd: req.cwd,
         ...(req.env ? { env: req.env } : {}),
       });
+      const proc = child;
 
       let settled = false;
       let polling = false;
@@ -295,10 +306,10 @@ export async function runAgy(
       const timers: NodeJS.Timeout[] = [];
 
       const killChild = () => {
-        child.kill("SIGTERM");
+        proc.kill("SIGTERM");
         // Escalation must survive finish()'s cleanup, and unref keeps it from
         // holding the process open.
-        const escalate = setTimeout(() => child.kill("SIGKILL"), killGraceMs);
+        const escalate = setTimeout(() => proc.kill("SIGKILL"), killGraceMs);
         escalate.unref?.();
       };
       const finish = (fn: () => void) => {
@@ -312,7 +323,7 @@ export async function runAgy(
 
       const drainProgress = () => {
         if (!req.onProgress || outputFormat !== "stream-json") return;
-        const all = child.stdout();
+        const all = proc.stdout();
         if (all.length <= streamCursor) return;
         const chunk = streamRest + all.slice(streamCursor);
         streamCursor = all.length;
@@ -349,13 +360,19 @@ export async function runAgy(
       }, pollMs);
 
       // Hard deadline independent of the child's pipes: agy's own --print-timeout
-      // should fire first; if it doesn't, resolve with partial output.
+      // should fire first. If it doesn't, kill the child and let its exit deliver
+      // whatever it printed on the way out; a child that will not die is given
+      // `reapMs`, then its output so far is taken as the partial answer.
       timers.push(
         setTimeout(
           () => {
             killChild();
             timedOut = true;
-            finish(() => resolve({ stdout: child.stdout(), stderr: child.stderr(), code: 0 }));
+            timers.push(
+              setTimeout(() => {
+                finish(() => resolve({ stdout: proc.stdout(), stderr: proc.stderr(), code: 0 }));
+              }, reapMs),
+            );
           },
           req.timeoutSec * 1000 + graceMs,
         ),
@@ -371,7 +388,8 @@ export async function runAgy(
       }
       req.signal?.addEventListener("abort", onAbort, { once: true });
 
-      void child.wait().then(({ code, error }) => {
+      void proc.wait().then(({ code, error }) => {
+        exited = true;
         if (settled) return;
         drainProgress();
         if (error?.code === "ENOENT") {
@@ -390,17 +408,21 @@ export async function runAgy(
           finish(() => reject(new AgyFailure("agy_error", `agy failed: ${error.message}`)));
           return;
         }
-        finish(() => resolve({ stdout: child.stdout(), stderr: child.stderr(), code }));
+        finish(() => resolve({ stdout: proc.stdout(), stderr: proc.stderr(), code }));
       });
     },
   ).finally(async () => {
+    // A cancelled or timed-out child may still be writing its log: give it a
+    // bounded chance to exit before the log is drained and removed.
+    if (child && !exited) await Promise.race([child.wait(), delay(reapMs)]);
     // Drain before deleting: a 429 that lands between the last poll tick and the
     // exit only exists in this file, and the post-run check below needs it.
     trailingLog = await tail.flush();
     await rm(logPath, { force: true }).catch(() => {});
   });
 
-  const envelope = parseEnvelope(finished.stdout);
+  // In text mode every line is model output, so nothing there may pass for an envelope.
+  const envelope = outputFormat ? parseEnvelope(finished.stdout) : null;
   const answer = answerOf(envelope, finished.stdout);
 
   if (!timedOut) {

@@ -102,17 +102,29 @@ function decodeObject(line: string): Record<string, unknown> | null {
 }
 
 /**
- * The envelope in `stdout`, or null when agy produced none (text mode, a crash
- * before the envelope, or a version without --output-format json).
+ * The envelope in `stdout`, or null when agy produced none (a crash before the
+ * envelope, or a version without --output-format).
+ *
+ * Under `json` the envelope is the top-level object; under `stream-json` it is
+ * the `result` field of the final `{"event":"result"}` line. Both are accepted,
+ * so the runner reads one shape whichever format it asked for. Only call this
+ * for output that was requested in one of those formats: a text-mode answer
+ * that happens to contain a JSON line with a `status` field would pass for one.
  */
 export function parseEnvelope(stdout: string): AgyEnvelope | null {
   const lines = stdout.split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
     const o = decodeObject(lines[i]!);
-    const env = o && shape(o);
+    if (!o) continue;
+    const env = str(o.event) === "result" ? resultEnvelope(o) : shape(o);
     if (env) return env;
   }
   return null;
+}
+
+function resultEnvelope(o: Record<string, unknown>): AgyEnvelope | null {
+  const r = o.result;
+  return typeof r === "object" && r !== null ? shape(r as Record<string, unknown>) : null;
 }
 
 /** One NDJSON line from --output-format stream-json. */
@@ -163,7 +175,7 @@ function streamEvent(o: Record<string, unknown>): StreamEvent | null {
     };
   }
   if (event === "result") {
-    const env = shape((o.result ?? {}) as Record<string, unknown>);
+    const env = resultEnvelope(o);
     return env ? { kind: "result", envelope: env } : null;
   }
   return { kind: "other", event };

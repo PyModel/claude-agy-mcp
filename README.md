@@ -231,7 +231,10 @@ bridge treats the tier in the name as the effort: an `effort` that differs from 
 sibling model at that tier (`Gemini 3.8 Flash (High)` + `effort: medium` → `Gemini 3.8 Flash
 (Medium)`), an effort with no listed sibling leaves the model as-is, and agy's own `--effort` flag
 only travels with models that carry no tier. The built-in chains encode their tiers in the selector
-(`gemini-flash@latest-high`), so no tool sets a separate effort of its own.
+(`gemini-flash@latest-high`), so no tool sets a separate effort of its own. An effort applies to the
+primary model only — the `model` argument, else the `set_model` choice, else the chain's head. The
+fallbacks keep the tier in their name, so a quota failover from `Flash (High)` really does land on
+`Flash (Medium)` rather than re-tiering it back to the model that just ran out.
 
 ### Quota-aware failover
 
@@ -256,33 +259,33 @@ The ceiling is a resource cap, not a diagnosis. When it fires, the run still ret
 
 **Two timeout layers — and the client one usually bites first.** The ceiling above is the _agy-side_ budget. Your MCP client (Claude Code) has its own, separate _tool-call_ timeout, and if it is shorter, the client gives up first — you'll see `Error: timed out waiting for response`, while the bridge's own ceiling reads `MAXIMUM RUNTIME EXCEEDED` instead. Raising `AGY_MAX_RUNTIME` alone therefore changes nothing: the client still aborts on its own schedule. The work is not lost either way — the agy session persists, so `follow_up` with the returned `session_id` retrieves it — but the real fix is to make the client wait at least as long as the ceiling. The [Install](#install) command sets a per-server `timeout` of 3600000ms (scoped to this server only). If you registered the server without it, re-run the `add-json` command from Install, or set the global env var `MCP_TOOL_TIMEOUT=3600000`. Rule of thumb: **client `timeout` ≥ `AGY_MAX_RUNTIME`**.
 
-**Expected latency.** Most of the perceived "slowness" is cold start: each call spawns the agy CLI and warms the model. Measured on agy 1.2.0, a trivial prompt costs **2–6s**, a run whose tool actions get denied around **16s**, and one constrained by `--json-schema` up to **56s** (the schema roughly triples thinking tokens). Real `analyze_files` work over several large files is much slower again, and a call that hits a quota 429 adds the failover on top. `follow_up` is the exception: it reuses a **resident agy process** (see `AGY_WARM_SESSIONS`) and skips the cold start entirely. Size the client timeout for the slow cases, not the fast ones.
+**Expected latency.** Most of the perceived "slowness" is cold start: each call spawns the agy CLI and warms the model. Measured on agy 1.2.0, a trivial prompt costs **2–6s**, a run whose tool actions get denied around **16s**, and one constrained by `--json-schema` up to **56s** (the schema roughly triples thinking tokens). Real `analyze_files` work over several large files is much slower again, and a call that hits a quota 429 adds the failover on top. `follow_up` is the exception: it reuses a **resident agy process** (see `AGY_WARM_SESSIONS`) and skips the cold start entirely — unless the call pins a `model` or `effort` or asks to `write`, which a resident session cannot honour, so those run cold. A resident turn is bounded by the same runtime ceiling and cancellation as a cold run. Size the client timeout for the slow cases, not the fast ones.
 
 ## Configuration
 
 All optional, via environment variables:
 
-| Variable                   | Default                    | Description                                                                                                   |
-| -------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `AGY_PATH`                 | `agy`                      | Path to the agy binary                                                                                        |
-| `AGY_MAX_RUNTIME`          | `3600`                     | Seconds; absolute runtime ceiling. The bridge never kills for inactivity — only cancellation, quota, or this  |
-| `AGY_TIMEOUT`              | `AGY_MAX_RUNTIME`          | Seconds; overrides the ceiling for every tool, passed as `--print-timeout`, enforced with a 15s kill grace    |
-| `AGY_TIMEOUT_<TOOL>`       | `AGY_MAX_RUNTIME`          | Seconds; overrides the ceiling for a single tool, e.g. `AGY_TIMEOUT_DEEP_SEARCH=900`. Wins over `AGY_TIMEOUT` |
-| `AGY_MAX_OUTPUT_CHARS`     | `50000`                    | Truncation cap for tool output                                                                                |
-| `AGY_DEFAULT_MODEL`        | `gemini-flash@latest-high` | Appended to every chain as a last resort                                                                      |
-| `AGY_ASK_MODEL`            | `true`                     | Refuse to delegate until the user has chosen a model via `set_model` (asked once, saved per machine)          |
-| `AGY_EFFORT`               | agy's own default          | `low` \| `medium` \| `high` fallback tier; selects the sibling model at that tier (see Effort and tiers)      |
-| `AGY_SKIP_PERMISSIONS`     | `true`                     | Pass `--dangerously-skip-permissions` to agy                                                                  |
-| `AGY_SANDBOX`              | `false`                    | Run agy with `--sandbox`                                                                                      |
-| `AGY_ON_FAILURE`           | `fallback`                 | `strict` appends an instruction to failed-tool errors telling the calling agent not to absorb the work itself |
-| `AGY_MAX_CONCURRENCY`      | `2`                        | Most agy processes at once. Calls beyond it queue instead of stampeding the shared quota                      |
-| `AGY_BUDGET_TOKENS`        | unset                      | Hard stop once this many tokens have been spent since startup. Check spend with `agy_status`                  |
-| `AGY_ALLOWED_ROOTS`        | unset (unrestricted)       | Colon- or comma-separated roots that `cwd`, `dirs` and `files` may not escape                                 |
-| `AGY_REDACT`               | `true`                     | Scrub credential-shaped strings out of returned text before it reaches the caller's context                   |
-| `AGY_MAX_DELEGATION_DEPTH` | `1`                        | Refuse to delegate once this deep, so Claude → agy → this server → agy cannot loop                            |
-| `AGY_WARM_SESSIONS`        | `true`                     | Keep a resident agy process per conversation so `follow_up` skips the cold start                              |
-| `AGY_WARM_MAX`             | `2`                        | Most resident sessions to keep; the least recently used is evicted                                            |
-| `AGY_WARM_IDLE_SEC`        | `300`                      | Kill a resident session after this long idle                                                                  |
+| Variable                   | Default                    | Description                                                                                                         |
+| -------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `AGY_PATH`                 | `agy`                      | Path to the agy binary                                                                                              |
+| `AGY_MAX_RUNTIME`          | `3600`                     | Seconds; absolute runtime ceiling. The bridge never kills for inactivity — only cancellation, quota, or this        |
+| `AGY_TIMEOUT`              | `AGY_MAX_RUNTIME`          | Seconds; overrides the ceiling for every tool, passed as `--print-timeout`, enforced with a 15s kill grace          |
+| `AGY_TIMEOUT_<TOOL>`       | `AGY_MAX_RUNTIME`          | Seconds; overrides the ceiling for a single tool, e.g. `AGY_TIMEOUT_DEEP_SEARCH=900`. Wins over `AGY_TIMEOUT`       |
+| `AGY_MAX_OUTPUT_CHARS`     | `50000`                    | Truncation cap for tool output                                                                                      |
+| `AGY_DEFAULT_MODEL`        | `gemini-flash@latest-high` | Appended to every chain as a last resort                                                                            |
+| `AGY_ASK_MODEL`            | `true`                     | Refuse to delegate until the user has chosen a model via `set_model` (asked once, saved per machine)                |
+| `AGY_EFFORT`               | agy's own default          | `low` \| `medium` \| `high` fallback tier; selects the sibling model at that tier (see Effort and tiers)            |
+| `AGY_SKIP_PERMISSIONS`     | `true`                     | Pass `--dangerously-skip-permissions` to agy                                                                        |
+| `AGY_SANDBOX`              | `false`                    | Run agy with `--sandbox`                                                                                            |
+| `AGY_ON_FAILURE`           | `fallback`                 | `strict` appends an instruction to failed-tool errors telling the calling agent not to absorb the work itself       |
+| `AGY_MAX_CONCURRENCY`      | `2`                        | Most agy processes at once. Calls beyond it queue instead of stampeding the shared quota                            |
+| `AGY_BUDGET_TOKENS`        | unset                      | Hard stop once this many tokens have been spent since startup. Check spend with `agy_status`                        |
+| `AGY_ALLOWED_ROOTS`        | unset (unrestricted)       | Roots that `cwd`, `dirs` and `files` may not escape, symlinks followed; separated by `:` (`;` on Windows) or commas |
+| `AGY_REDACT`               | `true`                     | Scrub credential-shaped strings out of returned text before it reaches the caller's context                         |
+| `AGY_MAX_DELEGATION_DEPTH` | `1`                        | Refuse to delegate once this deep, so Claude → agy → this server → agy cannot loop                                  |
+| `AGY_WARM_SESSIONS`        | `true`                     | Keep a resident agy process per conversation so `follow_up` skips the cold start                                    |
+| `AGY_WARM_MAX`             | `2`                        | Most resident sessions to keep; the least recently used is evicted                                                  |
+| `AGY_WARM_IDLE_SEC`        | `300`                      | Kill a resident session after this long idle                                                                        |
 
 > [!WARNING]
 > **`AGY_SKIP_PERMISSIONS` is a real grant, and agy does not enforce read-only on top of it.** It

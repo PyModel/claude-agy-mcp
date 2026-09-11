@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import type { Capabilities } from "./capabilities.js";
 import type { Config } from "./config.js";
-import { parseStreamEvents, type AgyEnvelope } from "./envelope.js";
+import { parseStreamEvents, type AgyEnvelope, type AgyUsage } from "./envelope.js";
 
 /**
  * A resident agy process that answers one turn per NDJSON line on its stdin.
@@ -20,14 +20,28 @@ export function turnMessage(prompt: string): string {
 export interface SessionProcess {
   write(line: string): void;
   onData(cb: (chunk: string) => void): void;
+  /** Fires once the process is gone and its stdout is fully delivered. */
   onExit(cb: () => void): void;
   kill(signal: NodeJS.Signals): void;
 }
 
-export type SpawnSession = (file: string, args: string[], cwd: string) => SessionProcess;
+export interface SessionSpawnOptions {
+  cwd: string;
+  env?: Record<string, string>;
+}
 
-const spawnSessionProcess: SpawnSession = (file, args, cwd) => {
-  const child = spawn(file, args, { cwd, detached: true });
+export type SpawnSession = (
+  file: string,
+  args: string[],
+  opts: SessionSpawnOptions,
+) => SessionProcess;
+
+const spawnSessionProcess: SpawnSession = (file, args, opts) => {
+  const child = spawn(file, args, {
+    cwd: opts.cwd,
+    detached: true,
+    ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
+  });
   const decoder = new StringDecoder("utf8");
   return {
     write: (line) => {
@@ -37,7 +51,9 @@ const spawnSessionProcess: SpawnSession = (file, args, cwd) => {
       child.stdout?.on("data", (d: Buffer) => cb(decoder.write(d)));
     },
     onExit: (cb) => {
-      child.on("exit", cb);
+      // "close", not "exit": the result line can still be in the pipe when the
+      // process has already exited, and it must reach onData before this fires.
+      child.on("close", cb);
       child.on("error", cb);
     },
     kill: (signal) => {
@@ -63,6 +79,14 @@ export class WarmUnavailable extends Error {
   }
 }
 
+/** The turn ran out of time. The session is gone; `text` is what it streamed. */
+export class WarmTimeout extends Error {
+  constructor(readonly text: string) {
+    super("resident agy session exceeded the turn timeout");
+    this.name = "WarmTimeout";
+  }
+}
+
 interface Session {
   key: string;
   proc: SessionProcess;
@@ -70,6 +94,8 @@ interface Session {
   alive: boolean;
   busy: boolean;
   lastUsed: number;
+  /** agy reports usage cumulatively per conversation; this is the previous turn's total. */
+  usageSoFar: AgyUsage;
   idleTimer?: NodeJS.Timeout;
   /** Set while a turn is in flight. */
   pending?: {
@@ -83,12 +109,32 @@ interface Session {
 export interface WarmDeps {
   /** Named apart from the runner's `spawn`: a session process is a different seam. */
   spawnSession?: SpawnSession;
+  /** Extra environment for every resident process, e.g. the delegation-depth counter. */
+  env?: Record<string, string>;
   now?: () => number;
 }
 
 export interface WarmStats {
   resident: number;
   keys: string[];
+}
+
+export interface TurnOptions {
+  /** How long the turn may take; the session is dropped when it elapses. */
+  timeoutMs: number;
+  signal?: AbortSignal;
+  onProgress?: (text: string) => void;
+}
+
+function usageDelta(now: AgyUsage, before: AgyUsage): AgyUsage {
+  const d = (a: number, b: number) => Math.max(0, a - b);
+  return {
+    inputTokens: d(now.inputTokens, before.inputTokens),
+    outputTokens: d(now.outputTokens, before.outputTokens),
+    thinkingTokens: d(now.thinkingTokens, before.thinkingTokens),
+    cacheReadTokens: d(now.cacheReadTokens, before.cacheReadTokens),
+    totalTokens: d(now.totalTokens, before.totalTokens),
+  };
 }
 
 export class WarmSessions {
@@ -112,16 +158,21 @@ export class WarmSessions {
 
   /**
    * Runs one turn against the session for `conversationId`, starting it if
-   * needed. Throws `WarmUnavailable` whenever a cold run would be safer —
-   * the caller treats that as "fall back", never as a failed delegation.
+   * needed. Throws `WarmUnavailable` whenever a cold run would be safer — the
+   * caller treats that as "fall back", never as a failed delegation — and
+   * `WarmTimeout` when the turn itself ran out of time.
+   *
+   * The envelope's `usage` is this turn's alone: agy reports the conversation's
+   * running total on every result, verified on agy 1.2.1.
    */
   async turn(
     conversationId: string,
     cwd: string,
     prompt: string,
-    onProgress?: (text: string) => void,
+    opts: TurnOptions,
   ): Promise<AgyEnvelope> {
     if (!this.enabled) throw new WarmUnavailable("warm sessions are disabled");
+    if (opts.signal?.aborted) throw new Error("agy run cancelled by client.");
 
     const session = this.sessions.get(conversationId) ?? this.start(conversationId, cwd);
     if (!session.alive) {
@@ -134,20 +185,41 @@ export class WarmSessions {
     session.lastUsed = this.now();
     this.arm(session);
 
+    let deadline: NodeJS.Timeout | undefined;
+    const onAbort = () => {
+      session.pending?.reject(new Error("agy run cancelled by client."));
+      this.drop(session, "cancelled");
+    };
     try {
-      return await new Promise<AgyEnvelope>((resolve, reject) => {
-        session.pending = { resolve, reject, text: "", ...(onProgress ? { onProgress } : {}) };
+      const envelope = await new Promise<AgyEnvelope>((resolve, reject) => {
+        session.pending = {
+          resolve,
+          reject,
+          text: "",
+          ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
+        };
+        deadline = setTimeout(() => {
+          reject(new WarmTimeout(session.pending?.text ?? ""));
+          this.drop(session, "turn timed out");
+        }, opts.timeoutMs);
+        deadline.unref?.();
+        opts.signal?.addEventListener("abort", onAbort, { once: true });
         try {
           session.proc.write(turnMessage(prompt));
         } catch (err) {
           reject(new WarmUnavailable(`could not write to resident session: ${String(err)}`));
         }
       });
+      const usage = usageDelta(envelope.usage, session.usageSoFar);
+      session.usageSoFar = envelope.usage;
+      return { ...envelope, usage };
     } finally {
+      if (deadline) clearTimeout(deadline);
+      opts.signal?.removeEventListener("abort", onAbort);
       session.busy = false;
       delete session.pending;
       session.lastUsed = this.now();
-      this.arm(session);
+      if (session.alive) this.arm(session);
     }
   }
 
@@ -156,7 +228,9 @@ export class WarmSessions {
   }
 
   private start(conversationId: string, cwd: string): Session {
-    this.evictIfFull();
+    if (!this.evictIfFull()) {
+      throw new WarmUnavailable(`all ${this.cfg.warmMax} resident sessions are busy`);
+    }
     const args = [
       "--input-format",
       "stream-json",
@@ -170,17 +244,28 @@ export class WarmSessions {
     if (this.cfg.skipPermissions && this.caps.has("--dangerously-skip-permissions")) {
       args.push("--dangerously-skip-permissions");
     }
+    if (this.cfg.sandbox && this.caps.has("--sandbox")) args.push("--sandbox");
     if (this.caps.has("--disable-slash-commands")) args.push("--disable-slash-commands");
     if (this.caps.has("--mode")) args.push("--mode", "plan");
 
     const spawnFn = this.deps.spawnSession ?? spawnSessionProcess;
     const session: Session = {
       key: conversationId,
-      proc: spawnFn(this.cfg.agyPath, args, cwd),
+      proc: spawnFn(this.cfg.agyPath, args, {
+        cwd,
+        ...(this.deps.env ? { env: this.deps.env } : {}),
+      }),
       buffer: "",
       alive: true,
       busy: false,
       lastUsed: this.now(),
+      usageSoFar: {
+        inputTokens: 0,
+        outputTokens: 0,
+        thinkingTokens: 0,
+        cacheReadTokens: 0,
+        totalTokens: 0,
+      },
     };
     session.proc.onData((chunk) => this.consume(session, chunk));
     session.proc.onExit(() => {
@@ -214,15 +299,17 @@ export class WarmSessions {
     session.idleTimer.unref?.();
   }
 
-  private evictIfFull(): void {
+  /** Makes room for one more session; false when every resident one is mid-turn. */
+  private evictIfFull(): boolean {
     while (this.sessions.size >= this.cfg.warmMax) {
       let oldest: Session | undefined;
       for (const s of this.sessions.values()) {
         if (!s.busy && (!oldest || s.lastUsed < oldest.lastUsed)) oldest = s;
       }
-      if (!oldest) return; // every resident session is busy; the caller runs cold
+      if (!oldest) return false;
       this.drop(oldest, "evicted");
     }
+    return true;
   }
 
   private drop(session: Session, why: string): void {

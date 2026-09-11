@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import {
-  CapabilityCache,
   degradedCapabilities,
   parseFlags,
   parseVersion,
@@ -76,18 +75,5 @@ describe("degradedCapabilities", () => {
       if (["--print-timeout", "--log-file", "--add-dir", "--conversation"].includes(flag)) continue;
       expect(caps.has(flag)).toBe(false);
     }
-  });
-});
-
-describe("CapabilityCache", () => {
-  it("probes once and shares the result", async () => {
-    let calls = 0;
-    const cache = new CapabilityCache(async () => {
-      calls++;
-      return degradedCapabilities("x");
-    });
-    await Promise.all([cache.get(), cache.get()]);
-    await cache.get();
-    expect(calls).toBe(1);
   });
 });

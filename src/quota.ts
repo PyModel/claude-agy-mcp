@@ -66,7 +66,8 @@ export class QuotaError extends Error {
  */
 export interface CooldownStore {
   load(): Record<string, number>;
-  save(entries: Record<string, number>): void;
+  /** `entries` is every live cooldown as of `now` (epoch ms); anything older has expired. */
+  save(entries: Record<string, number>, now: number): void;
 }
 
 export class MemoryCooldownStore implements CooldownStore {
@@ -93,8 +94,9 @@ export class CooldownRegistry {
 
   set(model: string, resetSeconds: number | undefined): void {
     const entries = this.live();
-    entries[model] = this.now() + (resetSeconds ?? DEFAULT_COOLDOWN_SEC) * 1000;
-    this.store.save(entries);
+    const t = this.now();
+    entries[model] = t + (resetSeconds ?? DEFAULT_COOLDOWN_SEC) * 1000;
+    this.store.save(entries, t);
   }
 
   cooling(model: string): boolean {

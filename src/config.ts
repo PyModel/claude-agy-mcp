@@ -1,3 +1,5 @@
+import path from "node:path";
+
 export interface Config {
   agyPath: string;
   /**
@@ -57,11 +59,14 @@ function effort(raw: string | undefined): "low" | "medium" | "high" | undefined 
   return raw === "low" || raw === "medium" || raw === "high" ? raw : undefined;
 }
 
-/** Roots are separated by the platform path delimiter, or by commas. */
-export function parseRoots(raw: string | undefined): string[] {
+/**
+ * Roots are separated by the platform path delimiter (":" on POSIX, ";" on
+ * Windows, where ":" is part of every absolute path), or by commas.
+ */
+export function parseRoots(raw: string | undefined, delimiter: string = path.delimiter): string[] {
   if (!raw) return [];
   return raw
-    .split(/[:,]/)
+    .split(new RegExp(`[${delimiter},]`))
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
 }

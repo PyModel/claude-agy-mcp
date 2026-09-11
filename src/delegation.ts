@@ -2,7 +2,7 @@ import type { Capabilities } from "./capabilities.js";
 import { Admission } from "./concurrency.js";
 import { delegationDepth, type Config } from "./config.js";
 import { assertWithinRoots, redact } from "./egress.js";
-import type { AgyUsage, DeniedAction } from "./envelope.js";
+import { EMPTY_USAGE, type AgyUsage, type DeniedAction } from "./envelope.js";
 import { AgyFailure } from "./failure.js";
 import { resolveEntry, type Effort, type ModelInfo, type ModelRegistry } from "./models.js";
 import {
@@ -15,7 +15,7 @@ import { runAgy, type RunnerDeps, type RunProgress } from "./runner.js";
 import { sessionFor, type ReadSessionsFile } from "./sessions.js";
 import { modeFor, type ToolDef } from "./tools.js";
 import { UsageLedger } from "./usage.js";
-import { WarmSessions, WarmUnavailable, type WarmDeps } from "./warm.js";
+import { WarmSessions, WarmTimeout, WarmUnavailable, type WarmDeps } from "./warm.js";
 
 export interface DelegationRequest {
   tool: ToolDef;
@@ -90,6 +90,18 @@ export interface DelegationDeps extends RunnerDeps, WarmDeps {
   cooldowns?: CooldownRegistry;
 }
 
+/** One model to try, already reconciled with the effort agy will accept for it. */
+interface Candidate {
+  /** Undefined lets agy choose: a continued conversation, or an unreadable listing. */
+  model?: string;
+  effort?: Effort;
+}
+
+interface Route {
+  candidates: Candidate[];
+  note?: string;
+}
+
 export class DelegationDepthError extends Error {
   constructor(depth: number, max: number) {
     super(
@@ -124,12 +136,12 @@ export class Delegator {
     private readonly deps: DelegationDeps = {},
     env: Record<string, string | undefined> = process.env,
   ) {
+    this.depth = delegationDepth(env);
     this.cooldowns = deps.cooldowns ?? new CooldownRegistry();
     this.admission = new Admission(cfg.maxConcurrency);
     this.ledger = new UsageLedger(cfg.budgetTokens);
-    this.warm = new WarmSessions(cfg, caps, deps);
+    this.warm = new WarmSessions(cfg, caps, { ...deps, env: this.childEnv() });
     this.prefs = deps.preferences ?? new MemoryPreferenceStore();
-    this.depth = delegationDepth(env);
   }
 
   /** Everything the `agy_status` tool reports. */
@@ -253,23 +265,50 @@ export class Delegator {
     if (this.cfg.askModel && !pref && !req.model && !req.conversationId) {
       throw new ModelNotChosenError(await this.defaultChoice(), await this.models.available());
     }
+    const route = await this.routeFor(req, pref);
+    return this.admission.run(req.conversationId, () => this.attempt(req, prompt, route));
+  }
 
+  /**
+   * The models to try, in order, each with the `--effort` it will be sent.
+   *
+   * A requested effort belongs to the primary model only — the caller's
+   * `model`, else the user's `set_model` choice, else the chain's head.
+   * Re-tiering the fallbacks as well would turn "Flash (Medium)" back into the
+   * "Flash (High)" that just hit its quota, so they keep the tier their name
+   * carries, and only an untiered fallback takes the configured default effort.
+   */
+  private async routeFor(req: DelegationRequest, pref: ModelPreference | null): Promise<Route> {
     // Continuing a conversation reuses the model it was started with, unless the
     // caller pinned one — agy honours a model switch on a resumed conversation,
     // which is how a cheap session gets a second opinion without re-sending it.
-    const resolution =
-      req.conversationId && !req.model
-        ? { models: [undefined], note: undefined }
-        : await this.models.resolveChain({
-            explicit: req.model,
-            chain: [...(pref ? [pref.model] : []), ...(req.tool.chain ?? [])],
-            defaultModel: this.cfg.defaultModel,
-          });
-    const effort = req.effort ?? pref?.effort ?? req.tool.effort ?? this.cfg.defaultEffort;
+    if (req.conversationId && !req.model) return { candidates: [{}] };
 
-    return this.admission.run(req.conversationId, () =>
-      this.attempt(req, prompt, resolution, effort),
-    );
+    const resolution = await this.models.resolveChain({
+      explicit: req.model,
+      chain: [...(pref ? [pref.model] : []), ...(req.tool.chain ?? [])],
+      defaultModel: this.cfg.defaultModel,
+    });
+    const available = await this.models.available();
+    const primaryEffort = req.effort ?? pref?.effort ?? this.cfg.defaultEffort;
+    const tierOf = (name: string) => available?.find((m) => m.name === name)?.effort;
+
+    const candidates: Candidate[] = [];
+    for (const [i, model] of resolution.models.entries()) {
+      if (!model) {
+        candidates.push({});
+        continue;
+      }
+      const pick =
+        i === 0
+          ? await this.models.forEffort(model, primaryEffort)
+          : tierOf(model)
+            ? { model }
+            : await this.models.forEffort(model, this.cfg.defaultEffort);
+      const candidate: Candidate = pick ?? { model };
+      if (!candidates.some((c) => c.model === candidate.model)) candidates.push(candidate);
+    }
+    return { candidates, ...(resolution.note ? { note: resolution.note } : {}) };
   }
 
   private finish(
@@ -279,25 +318,44 @@ export class Delegator {
     return { ...partial, output: scrubbed.text, redactions: scrubbed.count };
   }
 
-  private async attempt(
-    req: DelegationRequest,
-    prompt: string,
-    resolution: { models: (string | undefined)[]; note?: string },
-    effort: Effort | undefined,
-  ): Promise<Delegation> {
+  /**
+   * A resident session runs with the conversation's own model, in plan mode,
+   * so it can only stand in for a call that asks for nothing else.
+   */
+  private warmEligible(req: DelegationRequest): boolean {
+    return (
+      this.warm.enabled &&
+      req.conversationId !== undefined &&
+      !req.jsonSchema &&
+      !req.model &&
+      !req.effort &&
+      modeFor(req.tool, req.write) === "plan"
+    );
+  }
+
+  private async attempt(req: DelegationRequest, prompt: string, route: Route): Promise<Delegation> {
     const attempts: string[] = [];
 
     // A follow-up on a live conversation is the case a resident process is for.
-    if (req.conversationId && !req.jsonSchema && this.warm.enabled) {
+    if (this.warmEligible(req)) {
+      const conversationId = req.conversationId!;
       try {
-        const envelope = await this.warm.turn(req.conversationId, req.cwd, prompt);
+        const envelope = await this.warm.turn(conversationId, req.cwd, prompt, {
+          timeoutMs: req.timeoutSec * 1000,
+          ...(req.signal ? { signal: req.signal } : {}),
+          ...(req.onProgress
+            ? {
+                onProgress: (text: string) =>
+                  req.onProgress?.({ text, stepIndex: 0, stepType: "agent_response", tokens: 0 }),
+              }
+            : {}),
+        });
         if (envelope.status === "SUCCESS" && envelope.response.trim()) {
-          this.ledger.record(req.model, envelope.usage);
+          this.ledger.record(undefined, envelope.usage);
           return this.finish({
             output: envelope.response.trim(),
-            ...(req.model ? { model: req.model } : {}),
             attempts,
-            sessionId: envelope.conversationId ?? req.conversationId,
+            sessionId: envelope.conversationId ?? conversationId,
             timedOut: false,
             deniedActions: envelope.deniedActions,
             usage: envelope.usage,
@@ -310,27 +368,30 @@ export class Delegator {
         }
         attempts.push("warm session returned no answer; retried with a fresh agy process");
       } catch (err) {
+        if (err instanceof WarmTimeout) {
+          return this.finish({
+            output: err.text.trim(),
+            attempts,
+            sessionId: conversationId,
+            timedOut: true,
+            deniedActions: [],
+            usage: EMPTY_USAGE,
+            numTurns: 0,
+            warm: true,
+          });
+        }
         if (!(err instanceof WarmUnavailable)) throw err;
         attempts.push(`warm session unavailable (${err.message}); ran a fresh agy process`);
       }
     }
 
-    for (const model of resolution.models) {
+    for (const { model, effort } of route.candidates) {
       if (model && this.cooldowns.cooling(model)) {
         attempts.push(`${model}: quota cooldown, ${this.cooldowns.describe(model)} left`);
         continue;
       }
       try {
-        // A tiered model carries its own effort; a mismatch selects the sibling tier.
-        const pick = await this.models.forEffort(model, effort);
-        return await this.runOnce(
-          req,
-          prompt,
-          pick?.model,
-          pick?.effort,
-          attempts,
-          resolution.note,
-        );
+        return await this.runOnce(req, prompt, model, effort, attempts, route.note);
       } catch (err) {
         if (err instanceof QuotaError && model) {
           this.cooldowns.set(model, err.resetSeconds);

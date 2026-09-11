@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { CapabilityCache, probeCapabilities, type Capabilities } from "./capabilities.js";
+import { probeCapabilities, type Capabilities } from "./capabilities.js";
 import { loadConfig, timeoutFor, type Config } from "./config.js";
 import { FileCooldownStore } from "./cooldown-store.js";
 import { FilePreferenceStore } from "./preferences.js";
@@ -62,7 +62,9 @@ function deniedNote(d: Delegation): string | undefined {
  * which any analysed file containing `---` could forge.
  */
 export function renderDelegation(d: Delegation, timeoutSec: number, nonce: string): string {
-  const meta: string[] = [`model: ${d.model ?? "agy default"}`];
+  const meta: string[] = [
+    `model: ${d.model ?? (d.warm ? "the conversation's own" : "agy default")}`,
+  ];
   if (d.warm) meta.push("warm session");
   if (d.note) meta.push(`note: ${d.note}`);
   if (d.attempts.length) meta.push(`failover: ${d.attempts.join("; ")}`);
@@ -115,14 +117,17 @@ function progressReporter(extra: HandlerExtra | undefined) {
     const now = Date.now();
     if (now - last < 1000) return;
     last = now;
-    void extra.sendNotification?.({
-      method: "notifications/progress",
-      params: {
-        progressToken: token,
-        progress: p.stepIndex,
-        message: `agy ${p.stepType}: ${p.text.slice(-160)}`,
-      },
-    });
+    // A client that has gone away rejects this; that must not take the server down.
+    extra
+      .sendNotification?.({
+        method: "notifications/progress",
+        params: {
+          progressToken: token,
+          progress: p.stepIndex,
+          message: `agy ${p.stepType}: ${p.text.slice(-160)}`,
+        },
+      })
+      .catch(() => {});
   };
 }
 
@@ -167,7 +172,8 @@ function renderStatus(
   return `[claude-agy-mcp ${nonce}] status\n${lines.join("\n")}`;
 }
 
-const COUNCIL = ["gemini-pro@latest-high", "claude-opus@latest", "gemini-flash@latest-high"];
+/** Same members and order as `delegate_many`'s chain: one model per family, Flash first. */
+const COUNCIL = ["gemini-flash@latest-high", "gemini-pro@latest-high", "claude-opus@latest"];
 
 function fanoutLegs(
   args: Record<string, unknown>,
@@ -266,6 +272,20 @@ export function createToolHandler(
   elicitFor: (extra?: HandlerExtra) => Elicit | undefined = () => undefined,
 ): (args: Record<string, unknown>, extra?: HandlerExtra) => Promise<ToolResponse> {
   const timeoutSec = timeoutFor(cfg, tool.name);
+  const failed = (text: string): ToolResponse => ({
+    content: [
+      {
+        type: "text",
+        text:
+          cfg.onFailure === "strict"
+            ? text +
+              "\n\n[claude-agy-mcp strict mode] Delegation failed. Do NOT perform this work yourself " +
+              "in the main context — report the failure to the user and let them decide how to proceed."
+            : text,
+      },
+    ],
+    isError: true,
+  });
   return async (args, extra) => {
     const nonce = makeNonce();
     const gated = async <T>(delegate: () => Promise<T>): Promise<T> => {
@@ -323,10 +343,9 @@ export function createToolHandler(
 
       if (tool.kind === "fanout") {
         const results = await gated(() => delegator.runMany(base, fanoutLegs(args)));
-        return {
-          content: [{ type: "text", text: renderFanout(results, timeoutSec, nonce) }],
-          isError: results.every((r) => r.error) || undefined,
-        };
+        const text = renderFanout(results, timeoutSec, nonce);
+        if (results.every((r) => r.error)) return failed(text);
+        return { content: [{ type: "text", text }] };
       }
 
       const delegation = await gated(() => delegator.run(base));
@@ -337,20 +356,14 @@ export function createToolHandler(
         isError: delegation.timedOut || undefined,
       };
     } catch (err) {
-      let text = (err as Error).message;
-      if (cfg.onFailure === "strict") {
-        text +=
-          "\n\n[claude-agy-mcp strict mode] Delegation failed. Do NOT perform this work yourself " +
-          "in the main context — report the failure to the user and let them decide how to proceed.";
-      }
-      return { content: [{ type: "text", text }], isError: true };
+      return failed((err as Error).message);
     }
   };
 }
 
 export async function createServer(): Promise<McpServer> {
   const cfg = loadConfig();
-  const caps = await new CapabilityCache(() => probeCapabilities(cfg.agyPath)).get();
+  const caps = await probeCapabilities(cfg.agyPath);
   // A pre-flight failure here is the difference between "every call fails with a
   // confusing argument error" and one clear line before the first call.
   if (caps.version.startsWith("unknown")) {
@@ -375,9 +388,11 @@ export function buildServer(cfg: Config, caps: Capabilities): McpServer {
   });
 
   const server = new McpServer({ name: "claude-agy-mcp", version: VERSION });
-  // Client capabilities are only known after the handshake, so look them up per call.
+  // Client capabilities are only known after the handshake, so look them up per
+  // call. Only a client that can render a form is asked; the SDK throws for a
+  // URL-only elicitation client, which would turn the gate into a crash.
   const elicitFor = (): Elicit | undefined =>
-    server.server.getClientCapabilities()?.elicitation
+    server.server.getClientCapabilities()?.elicitation?.form
       ? (params) => server.server.elicitInput(params)
       : undefined;
   for (const tool of TOOLS) {

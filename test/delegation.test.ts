@@ -77,6 +77,37 @@ describe("Delegator", () => {
     expect(d.attempts).toEqual(["Gemini 3.8 Flash (High): quota exhausted (resets in 4h24m)"]);
   });
 
+  it("keeps the fallback's own tier when the pinned model carries a different effort", async () => {
+    // A set_model choice of Flash (High) at high effort must not turn the
+    // Flash (Medium) fallback back into the Flash (High) that just hit its quota.
+    const agy = agyWhere(["Gemini 3.8 Flash (High)"]);
+    const delegator = delegatorFor(agy);
+    await delegator.setPreference("gemini-flash@latest-high", "high");
+    const d = await delegator.run(request("web_lookup", { query: "docs" }));
+    expect(agy.runs.map(agy.modelOf)).toEqual([
+      "Gemini 3.8 Flash (High)",
+      "Gemini 3.8 Flash (Medium)",
+    ]);
+    expect(d.model).toBe("Gemini 3.8 Flash (Medium)");
+  });
+
+  it("cools down the model it actually sent, not the name it re-tiered from", async () => {
+    // Pinned Flash (High) at low effort runs as Flash (Low)... which this listing
+    // lacks, so it stays Flash (High); a medium pin does re-tier and must cool Medium.
+    const agy = agyWhere(["Gemini 3.8 Flash (Medium)"]);
+    const delegator = delegatorFor(agy);
+    const err = await delegator
+      .run({
+        ...request("web_lookup", { query: "x" }),
+        model: "Gemini 3.8 Flash (High)",
+        effort: "medium",
+      })
+      .catch((e: Error) => e);
+    expect((err as Error).message).toMatch(/quota-exhausted/);
+    expect(agy.runs.map(agy.modelOf)).toEqual(["Gemini 3.8 Flash (Medium)"]);
+    expect(delegator.status().cooldowns.map((c) => c.model)).toEqual(["Gemini 3.8 Flash (Medium)"]);
+  });
+
   it("does NOT fail over when the failure is the request's fault, not the model's", async () => {
     const agy = fakeAgy({
       envelope: { status: "ERROR", error: "UNAUTHENTICATED: please login again" },
@@ -292,14 +323,17 @@ describe("Delegator guards", () => {
 
 describe("Delegator warm sessions", () => {
   /** A resident agy that answers each written turn with a canned response. */
-  function residentAgy(behaviour: "answers" | "dies" = "answers") {
+  function residentAgy(behaviour: "answers" | "dies" | "stalls" = "answers") {
     const written: string[] = [];
     let emit: (chunk: string) => void = () => {};
     let exit: () => void = () => {};
-    const spawnSession = () => ({
+    const envs: (Record<string, string> | undefined)[] = [];
+    const spawnSession = (_f: string, _a: string[], opts: { env?: Record<string, string> }) => ({
       write: (line: string) => {
         written.push(line);
+        envs.push(opts.env);
         if (behaviour === "dies") queueMicrotask(() => exit());
+        else if (behaviour === "stalls") return;
         else
           queueMicrotask(() =>
             emit(
@@ -326,7 +360,7 @@ describe("Delegator warm sessions", () => {
       onExit: (cb: () => void) => (exit = cb),
       kill: () => {},
     });
-    return { spawnSession, written };
+    return { spawnSession, written, envs };
   }
 
   const followUp = () => ({
@@ -367,6 +401,66 @@ describe("Delegator warm sessions", () => {
     expect(d.warm).toBe(false);
     expect(d.attempts[0]).toMatch(/warm session unavailable.*fresh agy process/);
     expect(agy.runs).toHaveLength(1);
+    delegator.shutdown();
+  });
+
+  it("tells the resident process which delegation depth it runs at", async () => {
+    const resident = residentAgy();
+    const delegator = delegatorFor(
+      agyWhere(),
+      { warmSessions: true },
+      { spawnSession: resident.spawnSession },
+    );
+    await delegator.run(followUp());
+    expect(resident.envs[0]).toEqual({ AGY_DELEGATION_DEPTH: "1" });
+    delegator.shutdown();
+  });
+
+  it("runs cold when the follow-up pins a model, an effort, or asks to write", async () => {
+    for (const extra of [{ model: "Gemini 3.1 Pro (High)" }, { effort: "low" as const }]) {
+      const agy = agyWhere();
+      const resident = residentAgy();
+      const delegator = delegatorFor(
+        agy,
+        { warmSessions: true },
+        { spawnSession: resident.spawnSession },
+      );
+      const d = await delegator.run({ ...followUp(), ...extra });
+      expect(d.warm).toBe(false);
+      expect(resident.written).toHaveLength(0);
+      expect(agy.runs).toHaveLength(1);
+      delegator.shutdown();
+    }
+    const agy = agyWhere();
+    const resident = residentAgy();
+    const delegator = delegatorFor(
+      agy,
+      { warmSessions: true },
+      { spawnSession: resident.spawnSession },
+    );
+    const d = await delegator.run({
+      ...request("delegate", { prompt: "fix it", session_id: "conv-1" }),
+      conversationId: "conv-1",
+      write: true,
+    });
+    expect(d.warm).toBe(false);
+    expect(valueOf(agy.runs[0]!, "--mode")).toBe("accept-edits");
+    delegator.shutdown();
+  });
+
+  it("returns the partial text as a timed-out delegation when the resident turn stalls", async () => {
+    const agy = agyWhere();
+    const resident = residentAgy("stalls");
+    const delegator = delegatorFor(
+      agy,
+      { warmSessions: true },
+      { spawnSession: resident.spawnSession },
+    );
+    const d = await delegator.run({ ...followUp(), timeoutSec: 0.01 });
+    expect(d.timedOut).toBe(true);
+    expect(d.warm).toBe(true);
+    expect(agy.runs).toHaveLength(0);
+    expect(delegator.status().warm.resident).toBe(0);
     delegator.shutdown();
   });
 

@@ -21,7 +21,7 @@ describe("FileCooldownStore", () => {
   it("reads back what another process wrote", () => {
     const { dir, cleanup } = scratch();
     try {
-      new FileCooldownStore(dir).save({ Flash: 123 });
+      new FileCooldownStore(dir).save({ Flash: 123 }, 0);
       expect(new FileCooldownStore(dir).load()).toEqual({ Flash: 123 });
     } finally {
       cleanup();
@@ -31,7 +31,7 @@ describe("FileCooldownStore", () => {
   it("leaves no temp file behind", () => {
     const { dir, cleanup } = scratch();
     try {
-      new FileCooldownStore(dir).save({ Flash: 1 });
+      new FileCooldownStore(dir).save({ Flash: 1 }, 0);
       expect(readdirSync(dir)).toEqual(["cooldowns.json"]);
     } finally {
       cleanup();
@@ -60,7 +60,27 @@ describe("FileCooldownStore", () => {
   });
 
   it("degrades quietly when the cache dir cannot be written", () => {
-    expect(() => new FileCooldownStore("/proc/nope/nope").save({ A: 1 })).not.toThrow();
+    const store = new FileCooldownStore("/proc/nope/nope");
+    expect(() => store.save({ A: 1 }, 0)).not.toThrow();
+    expect(store.load()).toEqual({ A: 1 }); // still honoured in this process
+  });
+});
+
+describe("FileCooldownStore across writers", () => {
+  it("merges with what another process wrote instead of overwriting it", () => {
+    const { dir, cleanup } = scratch();
+    try {
+      const a = new FileCooldownStore(dir);
+      const b = new FileCooldownStore(dir);
+      a.save({ Flash: 100 }, 0);
+      b.save({ Pro: 200 }, 0);
+      expect(new FileCooldownStore(dir).load()).toEqual({ Flash: 100, Pro: 200 });
+      a.save({ Flash: 300 }, 0); // a longer lockout for the same model wins
+      b.save({ Flash: 150, Pro: 200 }, 0);
+      expect(new FileCooldownStore(dir).load()).toEqual({ Flash: 300, Pro: 200 });
+    } finally {
+      cleanup();
+    }
   });
 });
 

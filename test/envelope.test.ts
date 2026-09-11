@@ -36,6 +36,17 @@ describe("parseEnvelope", () => {
 
   it("ignores JSON that is not an envelope", () => {
     expect(parseEnvelope('{"hello":"world"}')).toBeNull();
+    expect(parseEnvelope('{"event":"result","result":"nope"}')).toBeNull();
+  });
+
+  it("reads the envelope out of a stream-json result event", () => {
+    const env = parseEnvelope(STREAM_NDJSON)!;
+    expect(env).toMatchObject({
+      conversationId: "48b2bbd8-f9b2-404f-9883-d58c7b0e6d0f",
+      status: "SUCCESS",
+      response: "OK\n",
+    });
+    expect(env.usage.totalTokens).toBe(8130);
   });
 });
 

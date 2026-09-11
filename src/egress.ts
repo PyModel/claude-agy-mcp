@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import path from "node:path";
 
 /**
@@ -28,14 +29,34 @@ function within(candidate: string, root: string): boolean {
 }
 
 /**
- * Throws unless every path sits under one of `roots`.
+ * The path with symlinks followed, so a link inside a root that points outside
+ * it is judged by where it leads. A path that does not exist yet is resolved
+ * through its nearest existing ancestor, which is where any link would be.
+ */
+export function canonical(p: string): string {
+  let probe = path.resolve(p);
+  let rest = "";
+  for (;;) {
+    try {
+      return path.join(realpathSync(probe), rest);
+    } catch {
+      const parent = path.dirname(probe);
+      if (parent === probe) return path.join(probe, rest);
+      rest = path.join(path.basename(probe), rest);
+      probe = parent;
+    }
+  }
+}
+
+/**
+ * Throws unless every path sits under one of `roots`, symlinks followed.
  * An empty `roots` means unrestricted — the default, so existing setups are unchanged.
  */
 export function assertWithinRoots(paths: string[], roots: string[]): void {
   if (roots.length === 0) return;
-  const resolvedRoots = roots.map((r) => path.resolve(r));
+  const resolvedRoots = roots.map(canonical);
   for (const p of paths) {
-    const resolved = path.resolve(p);
+    const resolved = canonical(p);
     if (!resolvedRoots.some((r) => within(resolved, r))) {
       throw new PathNotAllowedError(p, resolvedRoots);
     }
