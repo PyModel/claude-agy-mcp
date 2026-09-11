@@ -13,7 +13,7 @@ import { z } from "zod";
 import { ROUTING_ARGS, TOOLS, type ToolDef } from "./tools.js";
 
 const SET_MODEL_ARGS = z.object({
-  model: z.string().min(1),
+  model: z.string().min(1).optional(),
   effort: z.enum(["low", "medium", "high"]).optional(),
 });
 

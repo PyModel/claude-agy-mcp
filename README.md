@@ -205,8 +205,11 @@ On first use the bridge runs `agy models` (cached for the process lifetime) and 
 ### Choose the model once
 
 By default (`AGY_ASK_MODEL=true`) the bridge refuses to delegate until the user has picked a model
-and tier. The first call to any tool returns an error listing the models agy offers and asking the
-agent to put the choice to the user, then call **`set_model`** once. The choice is written to
+and tier. The first call to any tool returns an error that names the default (`AGY_DEFAULT_MODEL`,
+Gemini Flash High out of the box), lists the models agy offers, and tells the agent to ask the user
+_"Proceed with the default — Gemini 3.8 Flash (High) at high effort — or change the model or
+effort?"_. Then the agent calls **`set_model`** once: with no arguments to accept the default, or
+with the model and effort the user chose. The choice is written to
 `$XDG_CONFIG_HOME/claude-agy-mcp/preferences.json` (`~/.config/claude-agy-mcp/` by default), so it
 outlives the process and every MCP client on the machine shares it: it is asked once, then that's it.
 The chosen model goes to the head of every tool's chain — the chain still stands behind it for quota

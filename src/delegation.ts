@@ -4,7 +4,7 @@ import { delegationDepth, type Config } from "./config.js";
 import { assertWithinRoots, redact } from "./egress.js";
 import type { AgyUsage, DeniedAction } from "./envelope.js";
 import { AgyFailure } from "./failure.js";
-import type { Effort, ModelInfo, ModelRegistry } from "./models.js";
+import { resolveEntry, type Effort, type ModelInfo, type ModelRegistry } from "./models.js";
 import {
   MemoryPreferenceStore,
   type ModelPreference,
@@ -64,15 +64,19 @@ export interface Delegation {
 
 /** Thrown while AGY_ASK_MODEL is on and nobody has called `set_model` yet. */
 export class ModelNotChosenError extends Error {
-  constructor(available: ModelInfo[] | null) {
+  constructor(suggested: ModelPreference | null, available: ModelInfo[] | null) {
     const listing = available
       ? available.map((m) => `- ${m.name}`).join("\n")
       : "- (agy models could not be listed; run `agy models` yourself)";
+    const fallback = suggested
+      ? `${suggested.model}${suggested.effort ? ` at ${suggested.effort} effort` : ""}`
+      : "agy's own default model";
     super(
-      "No model has been chosen for this machine yet. Ask the user which model and reasoning " +
-        "tier to use, then call `set_model` once — the choice is saved and this will not be asked " +
-        "again. Suggested default: Gemini 3.8 Flash (High). Models agy offers:\n" +
-        `${listing}\n` +
+      "No model has been chosen for this machine yet. Ask the user this, in these words: " +
+        `"Proceed with the default — ${fallback} — or change the model or effort?" ` +
+        "Then call `set_model` once: with no arguments to accept the default, or with the " +
+        "model and effort they chose. The choice is saved and this will not be asked again.\n" +
+        `Models agy offers:\n${listing}\n` +
         "Set AGY_ASK_MODEL=false to skip this and route on the built-in chains.",
     );
     this.name = "ModelNotChosenError";
@@ -165,13 +169,41 @@ export class Delegator {
   }
 
   /**
+   * What `set_model` accepts when the user just says "proceed": the configured
+   * default model resolved against the live listing, at the tier its name carries.
+   */
+  async defaultChoice(): Promise<ModelPreference | null> {
+    if (!this.cfg.defaultModel) return null;
+    const available = await this.models.available();
+    const name = available ? resolveEntry(this.cfg.defaultModel, available) : undefined;
+    if (!name) return null;
+    const tier = available?.find((m) => m.name === name)?.effort;
+    const effort =
+      tier === "low" || tier === "medium" || tier === "high" ? tier : this.cfg.defaultEffort;
+    return { model: name, ...(effort ? { effort } : {}), setAt: "" };
+  }
+
+  /**
    * Records the user's choice for every later call on this machine.
    *
    * The model is validated against the live listing; a tier that differs from
    * the one in the model's name selects the sibling at that tier, so what is
    * stored is exactly what will be passed to agy.
    */
-  async setPreference(model: string, effort: Effort | undefined): Promise<ModelPreference> {
+  async setPreference(
+    model: string | undefined,
+    effort: Effort | undefined,
+  ): Promise<ModelPreference> {
+    if (!model) {
+      const fallback = await this.defaultChoice();
+      if (!fallback) {
+        throw new Error(
+          "set_model needs a `model`: the default could not be resolved against agy's model list.",
+        );
+      }
+      model = fallback.model;
+      effort ??= fallback.effort;
+    }
     const { models, note } = await this.models.resolveChain({ explicit: model, chain: [] });
     const resolved = models[0] ?? model;
     const pick = (await this.models.forEffort(resolved, effort)) ?? { model: resolved };
@@ -219,7 +251,7 @@ export class Delegator {
     const prompt = req.tool.buildPrompt(req.args, req.cwd);
     const pref = this.prefs.load();
     if (this.cfg.askModel && !pref && !req.model && !req.conversationId) {
-      throw new ModelNotChosenError(await this.models.available());
+      throw new ModelNotChosenError(await this.defaultChoice(), await this.models.available());
     }
 
     // Continuing a conversation reuses the model it was started with, unless the

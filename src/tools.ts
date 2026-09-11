@@ -326,16 +326,19 @@ export const TOOLS: ToolDef[] = [
     name: "set_model",
     description:
       "Choose the model and reasoning tier every tool uses from now on, on this machine. Ask the " +
-      "user first — call agy_status for the models agy offers — then call this once; the choice " +
-      "is saved and no tool asks again. An explicit `model` argument on a call still wins for " +
-      "that call. Set AGY_ASK_MODEL=false to skip the gate and route on the built-in chains.",
+      'user first — "proceed with the default, or change model or effort?" — then call this ' +
+      "once: with no arguments to accept the default, or with what they chose. The choice is " +
+      "saved and no tool asks again. An explicit `model` argument on a call still wins for that " +
+      "call. Set AGY_ASK_MODEL=false to skip the gate and route on the built-in chains.",
     schema: z.object({
       model: z
         .string()
         .min(1)
+        .optional()
         .describe(
           'The model the user chose: a display name ("Gemini 3.8 Flash (High)"), an id ' +
-            '("gemini-3.8-flash-high"), or a family selector ("gemini-flash@latest-high").',
+            '("gemini-3.8-flash-high"), or a family selector ("gemini-flash@latest-high"). ' +
+            "Omit to accept the default (AGY_DEFAULT_MODEL, Gemini Flash High out of the box).",
         ),
       effort: z
         .enum(["low", "medium", "high"])

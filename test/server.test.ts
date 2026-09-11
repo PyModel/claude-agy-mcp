@@ -185,8 +185,39 @@ describe("createToolHandler", () => {
       const res = await handler({ query: "docs" });
       expect(res.isError).toBe(true);
       expect(textOf(res)).toContain("call `set_model`");
-      expect(textOf(res)).toContain("Gemini 3.8 Flash (High)");
+      expect(textOf(res)).toContain("Gemini 3.1 Pro (Low)");
+      expect(textOf(res)).toContain("agy's own default model");
       expect(agy.runs).toHaveLength(0);
+    });
+
+    it("names the configured default in the question and accepts it via a bare set_model", async () => {
+      const agy = fakeAgy({ answer: "the answer" });
+      const { cfg, delegator } = makeDelegator({
+        spawn: agy.spawn,
+        cfg: { askModel: true, defaultModel: "gemini-flash@latest-high" },
+      });
+      const lookup = createToolHandler(toolNamed("web_lookup"), cfg, delegator);
+      const gated = await lookup({ query: "docs" });
+      expect(textOf(gated)).toContain(
+        "Proceed with the default — Gemini 3.8 Flash (High) at high effort — or change",
+      );
+
+      const set = createToolHandler(toolNamed("set_model"), cfg, delegator);
+      expect(textOf(await set({}))).toContain(
+        "model set to Gemini 3.8 Flash (High) at high effort",
+      );
+      await lookup({ query: "docs" });
+      expect(agy.modelOf(agy.runs[0]!)).toBe("Gemini 3.8 Flash (High)");
+    });
+
+    it("applies a changed effort to the default when the user keeps the model", async () => {
+      const { cfg, delegator } = makeDelegator({
+        cfg: { askModel: true, defaultModel: "gemini-flash@latest-high" },
+      });
+      const set = createToolHandler(toolNamed("set_model"), cfg, delegator);
+      expect(textOf(await set({ effort: "medium" }))).toContain(
+        "model set to Gemini 3.8 Flash (Medium) at medium effort",
+      );
     });
 
     it("lets an explicit model through the gate for that one call", async () => {
