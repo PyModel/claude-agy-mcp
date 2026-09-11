@@ -59,22 +59,60 @@ export class QuotaError extends Error {
   }
 }
 
-export class CooldownRegistry {
-  private until = new Map<string, number>();
+/**
+ * Where cooldowns live between calls. The default keeps them in memory; the file
+ * store shares them across every MCP client on the machine, so Claude Code and
+ * Cursor do not each re-burn a call rediscovering the same 429.
+ */
+export interface CooldownStore {
+  load(): Record<string, number>;
+  /** `entries` is every live cooldown as of `now` (epoch ms); anything older has expired. */
+  save(entries: Record<string, number>, now: number): void;
+}
 
-  constructor(private now: () => number = Date.now) {}
+export class MemoryCooldownStore implements CooldownStore {
+  private entries: Record<string, number> = {};
+  load(): Record<string, number> {
+    return { ...this.entries };
+  }
+  save(entries: Record<string, number>): void {
+    this.entries = { ...entries };
+  }
+}
+
+export class CooldownRegistry {
+  constructor(
+    private readonly store: CooldownStore = new MemoryCooldownStore(),
+    private now: () => number = Date.now,
+  ) {}
+
+  /** Entries that have not yet expired, as model -> epoch ms. */
+  private live(): Record<string, number> {
+    const t = this.now();
+    return Object.fromEntries(Object.entries(this.store.load()).filter(([, until]) => until > t));
+  }
 
   set(model: string, resetSeconds: number | undefined): void {
-    this.until.set(model, this.now() + (resetSeconds ?? DEFAULT_COOLDOWN_SEC) * 1000);
+    const entries = this.live();
+    const t = this.now();
+    entries[model] = t + (resetSeconds ?? DEFAULT_COOLDOWN_SEC) * 1000;
+    this.store.save(entries, t);
   }
 
   cooling(model: string): boolean {
-    const t = this.until.get(model);
-    return t !== undefined && t > this.now();
+    return this.live()[model] !== undefined;
   }
 
   describe(model: string): string {
-    const t = this.until.get(model);
-    return formatDuration(t === undefined ? 0 : (t - this.now()) / 1000);
+    const until = this.live()[model];
+    return formatDuration(until === undefined ? 0 : (until - this.now()) / 1000);
+  }
+
+  /** Every active cooldown, for the status tool. */
+  active(): { model: string; secondsLeft: number }[] {
+    const t = this.now();
+    return Object.entries(this.live())
+      .map(([model, until]) => ({ model, secondsLeft: Math.round((until - t) / 1000) }))
+      .sort((a, b) => b.secondsLeft - a.secondsLeft);
   }
 }

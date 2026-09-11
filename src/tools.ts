@@ -1,5 +1,6 @@
 import path from "node:path";
 import { z } from "zod";
+import type { RunMode } from "./runner.js";
 
 const OUTPUT_RULES =
   "Answer directly with no preamble or closing remarks. Be thorough but concise. " +
@@ -16,12 +17,46 @@ const commonShape = {
     .describe(
       "Absolute path to the working directory / project root. Defaults to the server's cwd.",
     ),
+  dirs: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Extra directories to add to agy's workspace, for cross-repo or worktree-vs-base analysis.",
+    ),
   model: z
     .string()
     .optional()
     .describe(
-      'Override the model (exact name from `agy models`, e.g. "Gemini 3.1 Pro (High)"). ' +
+      'Override the model. Accepts a display name ("Gemini 3.8 Flash (High)"), an id ' +
+        '("gemini-3.8-flash-high"), or a family selector ("gemini-pro@latest-high"). ' +
         "Normally omit — the tool routes automatically.",
+    ),
+  effort: z
+    .enum(["low", "medium", "high"])
+    .optional()
+    .describe(
+      "Reasoning tier. Gemini models carry their tier in the name, so this switches to the " +
+        "sibling model at that tier (Flash (High) -> Flash (Medium)); agy's own --effort flag " +
+        "only reaches models without a tier. Defaults to the user's set_model choice, else the " +
+        "tool's own tier.",
+    ),
+  slash_commands: z
+    .boolean()
+    .optional()
+    .describe(
+      "Let agy expand your slash commands and skills into the prompt. Off by default: a " +
+        "hostile file in the workspace can otherwise steer the delegated model.",
+    ),
+};
+
+const structuredShape = {
+  schema: z
+    .string()
+    .optional()
+    .describe(
+      "JSON Schema (as a string) constraining the answer. Returns structuredContent as well " +
+        "as text. Costs noticeably more latency and tokens, so use it only when you will parse " +
+        "the result.",
     ),
 };
 
@@ -32,10 +67,25 @@ const commonShape = {
  */
 export const ROUTING_ARGS = z.object({
   ...commonShape,
+  ...structuredShape,
   session_id: z.string().optional(),
+  write: z.boolean().optional(),
+  sandbox: z.boolean().optional(),
 });
 
 type ToolSchema = z.ZodObject<z.ZodRawShape>;
+
+/**
+ * How much authority a tool's runs get.
+ *
+ * `read-only` pins `--mode plan`, so agy may read and search but its write and
+ * execute actions come back in `denied_actions` — proof the run changed nothing,
+ * rather than a promise that it didn't.
+ */
+export type Privilege = "read-only" | "caller-chooses";
+
+/** What the server does with the call, beyond turning arguments into a prompt. */
+export type ToolKind = "delegate" | "fanout" | "status" | "configure";
 
 export interface ToolDef {
   name: string;
@@ -44,8 +94,19 @@ export interface ToolDef {
   schema: ToolSchema;
   /** Model preference order. Omitted when the tool has no say — `follow_up` reuses its session's model. */
   chain?: string[];
+  privilege: Privilege;
+  kind: ToolKind;
   /** Validates `args` against `schema`, then renders the agy prompt. */
   buildPrompt(args: unknown, cwd: string): string;
+  /** Extra workspace roots this tool's own arguments imply. */
+  extraDirs(args: unknown, cwd: string): string[];
+  /** Absolute paths this call will hand to agy, for the allowed-roots check. */
+  touchedPaths(args: unknown, cwd: string): string[];
+}
+
+export function modeFor(tool: ToolDef, write: boolean | undefined): RunMode {
+  if (tool.privilege === "read-only") return "plan";
+  return write ? "accept-edits" : "plan";
 }
 
 function defineTool<S extends ToolSchema>(def: {
@@ -53,10 +114,20 @@ function defineTool<S extends ToolSchema>(def: {
   description: string;
   schema: S;
   chain?: string[];
+  privilege: Privilege;
+  kind?: ToolKind;
   prompt(args: z.output<S>, cwd: string): string;
+  paths?(args: z.output<S>, cwd: string): string[];
 }): ToolDef {
-  const { prompt, ...rest } = def;
-  return { ...rest, buildPrompt: (args, cwd) => prompt(def.schema.parse(args), cwd) };
+  const { prompt, paths, kind, ...rest } = def;
+  const pathsOf = (args: unknown, cwd: string) => paths?.(def.schema.parse(args), cwd) ?? [];
+  return {
+    ...rest,
+    kind: kind ?? "delegate",
+    buildPrompt: (args, cwd) => prompt(def.schema.parse(args), cwd),
+    extraDirs: (args, cwd) => [...new Set(pathsOf(args, cwd).map((p) => path.dirname(p)))],
+    touchedPaths: pathsOf,
+  };
 }
 
 export const TOOLS: ToolDef[] = [
@@ -74,8 +145,11 @@ export const TOOLS: ToolDef[] = [
         .describe("File paths to analyze (relative to cwd or absolute)."),
       question: z.string().describe("What you want to know about these files."),
       ...commonShape,
+      ...structuredShape,
     }),
-    chain: ["Gemini 3.7 Flash (High)", "Gemini 3.5 Flash (High)", "Gemini 3.1 Pro (Low)"],
+    chain: ["gemini-flash@latest-high", "gemini-pro@latest-low"],
+    privilege: "read-only",
+    paths: (args, cwd) => resolveFiles(args.files, cwd),
     prompt(args, cwd) {
       const files = resolveFiles(args.files, cwd);
       return (
@@ -95,8 +169,10 @@ export const TOOLS: ToolDef[] = [
         .string()
         .describe("What to find, e.g. 'when was the auth middleware refactored and why'."),
       ...commonShape,
+      ...structuredShape,
     }),
-    chain: ["Gemini 3.7 Flash (Medium)", "Gemini 3.7 Flash (High)", "Gemini 3.5 Flash (High)"],
+    chain: ["gemini-flash@latest-high", "gemini-flash@latest-medium"],
+    privilege: "read-only",
     prompt(args) {
       return (
         `Search this repository to answer the following. Use git log, git diff, git blame, ` +
@@ -114,8 +190,10 @@ export const TOOLS: ToolDef[] = [
     schema: z.object({
       query: z.string().describe("What to look up on the web."),
       ...commonShape,
+      ...structuredShape,
     }),
-    chain: ["Gemini 3.7 Flash (Medium)", "Gemini 3.7 Flash (High)", "Gemini 3.5 Flash (High)"],
+    chain: ["gemini-flash@latest-high", "gemini-flash@latest-medium"],
+    privilege: "read-only",
     prompt(args) {
       return `Look up on the web: ${args.query}\n\nInclude source URLs for key claims. ${OUTPUT_RULES}`;
     },
@@ -126,7 +204,8 @@ export const TOOLS: ToolDef[] = [
       "Get an adversarial second opinion from a different model family (Gemini Pro). " +
       "ALWAYS use this for plan critiques, design reviews, and pre-merge code review: " +
       "it hunts for flaws, edge cases, security issues, and unstated assumptions you may have missed. " +
-      "Pass either `content` or `files` \u2014 a call with neither is rejected.",
+      "Pass either `content` or `files` — a call with neither is rejected. " +
+      "Pass `schema` to get ranked findings back as data instead of prose.",
     schema: z
       .object({
         content: z
@@ -142,16 +221,14 @@ export const TOOLS: ToolDef[] = [
           .optional()
           .describe("Optional focus area, e.g. 'security', 'concurrency'."),
         ...commonShape,
+        ...structuredShape,
       })
       .refine((a) => Boolean(a.content) || Boolean(a.files?.length), {
         message: "adversarial_review requires either `content` or `files`.",
       }),
-    chain: [
-      "Gemini 3.1 Pro (High)",
-      "Claude Opus 4.6 (Thinking)",
-      "Gemini 3.7 Flash (High)",
-      "Gemini 3.5 Flash (High)",
-    ],
+    chain: ["gemini-flash@latest-high", "gemini-pro@latest-high", "claude-opus@latest"],
+    privilege: "read-only",
+    paths: (args, cwd) => resolveFiles(args.files ?? [], cwd),
     prompt(args, cwd) {
       const subject = args.content
         ? `Review the following:\n\n${args.content}`
@@ -172,12 +249,15 @@ export const TOOLS: ToolDef[] = [
     description:
       "Continue a previous Antigravity session by session_id (returned by every other tool). " +
       "USE THIS for follow-up questions about a prior delegation — the full prior context " +
-      "is already on agy's side, so you don't resend anything.",
+      "is already on agy's side, so you don't resend anything. Pass `model` to get a second " +
+      "opinion on the same history from a different model without re-sending it.",
     schema: z.object({
       session_id: z.string().describe("The session id returned by a previous claude-agy-mcp call."),
       question: z.string().describe("The follow-up question."),
       ...commonShape,
+      ...structuredShape,
     }),
+    privilege: "read-only",
     prompt(args) {
       return args.question;
     },
@@ -186,14 +266,99 @@ export const TOOLS: ToolDef[] = [
     name: "delegate",
     description:
       "Raw delegation to the Antigravity CLI for heavy tasks that don't fit the other tools. " +
-      "agy has full tool access (shell, file reads, web) in the given cwd.",
+      "Read-only by default; pass `write: true` to let agy edit files, `sandbox: true` to " +
+      "confine it. Anything it was refused comes back as a denied-actions note.",
     schema: z.object({
       prompt: z.string().describe("The complete task prompt for agy."),
+      write: z
+        .boolean()
+        .optional()
+        .describe("Allow file edits and command execution. Off by default."),
+      sandbox: z.boolean().optional().describe("Run agy with terminal restrictions enabled."),
       ...commonShape,
+      ...structuredShape,
     }),
-    chain: ["Gemini 3.7 Flash (High)", "Gemini 3.5 Flash (High)"],
+    chain: ["gemini-flash@latest-high", "gemini-pro@latest-low"],
+    privilege: "caller-chooses",
     prompt(args) {
       return args.prompt;
     },
   }),
+  defineTool({
+    name: "delegate_many",
+    description:
+      "Fan one question out to several models at once (a council, with a disagreement report), " +
+      "or fan several sub-tasks out to one model. Runs behind the same concurrency cap as " +
+      "everything else, so it queues rather than stampedes the shared quota.",
+    schema: z
+      .object({
+        prompt: z.string().optional().describe("One prompt to send to every model in `models`."),
+        tasks: z
+          .array(z.string())
+          .optional()
+          .describe("Several prompts to run, each as its own delegation."),
+        models: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Models to ask. Defaults to a Flash/Pro/Opus council when `prompt` is used, " +
+              "and to the automatic route when `tasks` is used.",
+          ),
+        ...commonShape,
+      })
+      .refine((a) => Boolean(a.prompt) || Boolean(a.tasks?.length), {
+        message: "delegate_many requires either `prompt` or `tasks`.",
+      }),
+    chain: ["gemini-flash@latest-high", "gemini-pro@latest-high", "claude-opus@latest"],
+    privilege: "read-only",
+    kind: "fanout",
+    prompt(args) {
+      return args.prompt ?? (args.tasks ?? []).join("\n\n");
+    },
+  }),
+  defineTool({
+    name: "set_model",
+    description:
+      "Choose the model and reasoning tier every tool uses from now on, on this machine. Ask the " +
+      'user first — "proceed with the default, or change model or effort?" — then call this ' +
+      "once: with no arguments to accept the default, or with what they chose. The choice is " +
+      "saved and no tool asks again. An explicit `model` argument on a call still wins for that " +
+      "call. Set AGY_ASK_MODEL=false to skip the gate and route on the built-in chains.",
+    schema: z.object({
+      model: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          'The model the user chose: a display name ("Gemini 3.8 Flash (High)"), an id ' +
+            '("gemini-3.8-flash-high"), or a family selector ("gemini-flash@latest-high"). ' +
+            "Omit to accept the default (AGY_DEFAULT_MODEL, Gemini Flash High out of the box).",
+        ),
+      effort: z
+        .enum(["low", "medium", "high"])
+        .optional()
+        .describe("The tier the user chose. Omit to take the tier the model name carries."),
+    }),
+    privilege: "read-only",
+    kind: "configure",
+    prompt() {
+      return "";
+    },
+  }),
+  defineTool({
+    name: "agy_status",
+    description:
+      "What this bridge has spent and what it can still do: tokens by model, live quota " +
+      "cooldowns, runs in flight, the resolved model chain per tool, the user's set_model " +
+      "choice, the models agy offers, warm sessions, and the agy version and flags detected " +
+      "at startup. Check this before a large fan-out, or to list models before set_model.",
+    schema: z.object({}),
+    privilege: "read-only",
+    kind: "status",
+    prompt() {
+      return "";
+    },
+  }),
 ];
+
+export const TOOLS_BY_NAME: ReadonlyMap<string, ToolDef> = new Map(TOOLS.map((t) => [t.name, t]));

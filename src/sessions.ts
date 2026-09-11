@@ -16,9 +16,13 @@ export type ReadSessionsFile = () => Promise<string>;
 const readSessionsFile: ReadSessionsFile = () => readFile(SESSIONS_FILE, "utf8");
 
 /**
- * The session agy associates with `cwd`, or undefined when the cache is
- * missing, unreadable, or has no entry. agy stores keys as it received them, so
- * both sides of the comparison are resolved before matching.
+ * The session agy associates with `cwd` — a *fallback* only.
+ *
+ * This file is global to the user, not to this server: two concurrent
+ * delegations in one directory overwrite each other's entry, and an interactive
+ * agy the user happens to be running there wins outright. The run's own
+ * `conversation_id` from the JSON envelope is authoritative and is what
+ * `Delegator` returns; this is consulted only when agy is too old to report one.
  */
 export async function sessionFor(
   cwd: string,

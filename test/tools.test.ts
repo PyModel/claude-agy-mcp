@@ -1,22 +1,42 @@
 import { describe, it, expect } from "vitest";
-import { TOOLS, resolveFiles } from "../src/tools.js";
+import { TOOLS, modeFor, resolveFiles } from "../src/tools.js";
 
 describe("TOOLS", () => {
-  it("defines the six tools", () => {
+  it("defines the nine tools", () => {
     expect(TOOLS.map((t) => t.name).sort()).toEqual([
       "adversarial_review",
+      "agy_status",
       "analyze_files",
       "deep_search",
       "delegate",
+      "delegate_many",
       "follow_up",
+      "set_model",
       "web_lookup",
     ]);
   });
 
+  it("keeps every read-only tool in plan mode, whatever the caller asks for", () => {
+    for (const t of TOOLS) {
+      if (t.privilege !== "read-only") continue;
+      expect(modeFor(t, true)).toBe("plan");
+      expect(modeFor(t, undefined)).toBe("plan");
+    }
+  });
+
+  it("only delegate lets the caller ask for write access", () => {
+    const delegate = TOOLS.find((t) => t.name === "delegate")!;
+    expect(delegate.privilege).toBe("caller-chooses");
+    expect(modeFor(delegate, true)).toBe("accept-edits");
+    expect(modeFor(delegate, undefined)).toBe("plan");
+  });
+
   it("declares a model chain for every tool that picks its own model", () => {
     for (const t of TOOLS) {
-      // follow_up reuses the model of the session it continues, so it declares none.
-      if (t.name === "follow_up") expect(t.chain).toBeUndefined();
+      // follow_up reuses the model of the session it continues; agy_status and
+      // set_model never reach agy at all, so none of them declares a chain.
+      if (["follow_up", "agy_status", "set_model"].includes(t.name))
+        expect(t.chain).toBeUndefined();
       else expect(t.chain?.length).toBeGreaterThan(0);
     }
   });

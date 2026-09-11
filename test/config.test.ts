@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { loadConfig, timeoutFor } from "../src/config.js";
+import { loadConfig, parseRoots, timeoutFor } from "../src/config.js";
 
 describe("loadConfig", () => {
   it("returns defaults for empty env", () => {
@@ -9,10 +9,20 @@ describe("loadConfig", () => {
       defaultTimeoutSec: 3600,
       perToolTimeouts: {},
       maxOutputChars: 50_000,
-      defaultModel: "Gemini 3.7 Flash (High)",
+      defaultModel: "gemini-flash@latest-high",
+      defaultEffort: undefined,
+      askModel: true,
       skipPermissions: true,
       sandbox: false,
       onFailure: "fallback",
+      maxConcurrency: 2,
+      budgetTokens: undefined,
+      allowedRoots: [],
+      redact: true,
+      maxDelegationDepth: 1,
+      warmSessions: true,
+      warmMax: 2,
+      warmIdleSec: 300,
     });
   });
 
@@ -72,6 +82,14 @@ describe("loadConfig", () => {
 
   it("treats unknown AGY_ON_FAILURE values as fallback", () => {
     expect(loadConfig({ AGY_ON_FAILURE: "explode" }).onFailure).toBe("fallback");
+  });
+});
+
+describe("parseRoots", () => {
+  it("splits on the platform delimiter or commas, so Windows drive letters survive", () => {
+    expect(parseRoots("/a:/b, /c", ":")).toEqual(["/a", "/b", "/c"]);
+    expect(parseRoots("C:\\repo;D:\\other", ";")).toEqual(["C:\\repo", "D:\\other"]);
+    expect(parseRoots(undefined)).toEqual([]);
   });
 });
 

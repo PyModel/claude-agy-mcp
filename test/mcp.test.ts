@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { createServer, VERSION } from "../src/server.js";
+import { buildServer, VERSION } from "../src/server.js";
 import { TOOLS } from "../src/tools.js";
+import { fullCaps, testConfig } from "./support.js";
 
 /**
  * Protocol-level checks: what an MCP client actually sees. These never reach agy
@@ -17,7 +18,10 @@ describe("the server over MCP", () => {
   beforeAll(async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     client = new Client({ name: "test", version: "0" });
-    await Promise.all([createServer().connect(serverTransport), client.connect(clientTransport)]);
+    await Promise.all([
+      buildServer(testConfig, fullCaps).connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
   });
 
   afterAll(() => client.close());
@@ -34,9 +38,13 @@ describe("the server over MCP", () => {
     expect(Object.keys(schema.properties ?? {}).sort()).toEqual([
       "content",
       "cwd",
+      "dirs",
+      "effort",
       "files",
       "focus",
       "model",
+      "schema",
+      "slash_commands",
     ]);
     // Every field is individually optional; the rule is what makes {} invalid.
     expect(schema.required ?? []).toEqual([]);
