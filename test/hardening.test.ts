@@ -269,6 +269,18 @@ describe("working-tree fingerprint", () => {
     );
   });
 
+  it("covers an untracked directory whose whole content is ignored, once", async () => {
+    // git lists both `u/` and `u/build/` here; the parent walk covers the child.
+    const dir = repo();
+    writeFileSync(path.join(dir, ".gitignore"), "build/\n");
+    mkdirSync(path.join(dir, "u", "build"), { recursive: true });
+    writeFileSync(path.join(dir, "u", "build", "o.js"), "one");
+    expect(await changed(dir, () => {})).toBe(false);
+    expect(
+      await changed(dir, () => writeFileSync(path.join(dir, "u", "build", "o.js"), "two!")),
+    ).toBe(true);
+  });
+
   it("still reports an untouched repository with ignored entries as unchanged", async () => {
     const dir = repo();
     writeFileSync(path.join(dir, ".gitignore"), "node_modules/\n");
