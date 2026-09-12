@@ -417,14 +417,35 @@ describe("Delegator warm sessions", () => {
     delegator.shutdown();
   });
 
-  it("reports, rather than re-runs, a follow-up whose resident process died after receiving it", async () => {
-    // The turn reached agy, so it may have run; running it again cold could
-    // apply its effects twice.
+  it("re-runs cold a follow-up whose resident process died after receiving it, when the tree is unchanged", async () => {
+    // Warm turns are plan mode. With the tree provably untouched, a cold re-run
+    // cannot repeat an effect, so the caller still gets an answer.
     const agy = agyWhere();
     const delegator = delegatorFor(
       agy,
       { warmSessions: true },
-      { spawnSession: residentAgy("dies").spawnSession },
+      {
+        spawnSession: residentAgy("dies").spawnSession,
+        snapshot: async () => ({ method: "scan" as const, digest: "same" }),
+      },
+    );
+    const d = await delegator.run(followUp());
+    expect(d.output).toBe("the answer");
+    expect(d.attempts[0]).toMatch(/died after the turn was sent/);
+    expect(agy.runs).toHaveLength(1);
+    delegator.shutdown();
+  });
+
+  it("reports, rather than re-runs, a follow-up whose resident process died after the tree moved", async () => {
+    let n = 0;
+    const agy = agyWhere();
+    const delegator = delegatorFor(
+      agy,
+      { warmSessions: true },
+      {
+        spawnSession: residentAgy("dies").spawnSession,
+        snapshot: async () => ({ method: "scan" as const, digest: `d${n++}` }),
+      },
     );
     await expect(delegator.run(followUp())).rejects.toThrow(/may or may not have run/);
     expect(agy.runs).toHaveLength(0);

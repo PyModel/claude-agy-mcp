@@ -22,7 +22,13 @@ import {
 } from "./runner.js";
 import { modeFor, type ToolDef } from "./tools.js";
 import { UsageLedger } from "./usage.js";
-import { WarmSessions, WarmTimeout, WarmUnavailable, type WarmDeps } from "./warm.js";
+import {
+  WarmSessions,
+  WarmTimeout,
+  WarmTurnUncertain,
+  WarmUnavailable,
+  type WarmDeps,
+} from "./warm.js";
 
 export interface DelegationRequest {
   tool: ToolDef;
@@ -577,8 +583,19 @@ export class Delegator {
             warm: true,
           });
         }
-        if (!(err instanceof WarmUnavailable)) throw err;
-        attempts.push(`warm session unavailable (${err.message}); ran a fresh agy process`);
+        if (err instanceof WarmTurnUncertain) {
+          // The resident process died after agy received the turn. Warm turns
+          // are plan-mode only, so re-running cold is safe exactly when the
+          // tree shows nothing happened; otherwise the caller has to decide.
+          if (!(await mayRepeat())) throw err;
+          attempts.push(
+            "warm session died after the turn was sent and the tree is unchanged; ran a fresh agy process",
+          );
+        } else if (err instanceof WarmUnavailable) {
+          attempts.push(`warm session unavailable (${err.message}); ran a fresh agy process`);
+        } else {
+          throw err;
+        }
       }
     }
 

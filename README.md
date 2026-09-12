@@ -260,7 +260,7 @@ agy never surfaces quota exhaustion in print mode — it silently retries the 42
 3. retries the same prompt on the next model in the tool's chain,
 4. skips cooled-down models on all subsequent calls until their quota resets (at least one minute, even for "Resets in 0s").
 
-A model you pin with `model` is tried even while it is cooling down. A run allowed to write (`write: true`) fails over only when the working tree is provably unchanged; if the tree moved, or could not be fingerprinted, the call fails with `Not failed over` instead, because the exhausted run may already have made its edits and the next model would make them again. The same rule governs the single retry after a network error, and a resident session that returned an empty answer.
+A model you pin with `model` is tried even while it is cooling down. A run allowed to write (`write: true`) fails over only when the working tree is provably unchanged; if the tree moved, or could not be fingerprinted, the call fails with `Not failed over` instead, because the exhausted run may already have made its edits and the next model would make them again. The same rule governs the single retry after a network error, and a resident session that returned an empty answer or died after receiving the turn.
 
 Failovers are annotated in the response footer (`failover: <model>: quota exhausted (resets in 4h24m)`). Only when every candidate is exhausted does the call fail — in seconds, with reset times listed — instead of hanging.
 

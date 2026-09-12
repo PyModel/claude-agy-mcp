@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   chmodSync,
   mkdirSync,
@@ -150,9 +150,11 @@ describe("containment and redaction", () => {
   });
 
   it("redacts in linear time on adversarial input", () => {
+    // 400K chars: the quadratic pattern took over 20s here, linear takes
+    // milliseconds, so the bound is generous for a slow shared runner.
     const started = Date.now();
-    redact("TOKEN".repeat(40_000));
-    expect(Date.now() - started).toBeLessThan(1000);
+    redact("TOKEN".repeat(80_000));
+    expect(Date.now() - started).toBeLessThan(5000);
   });
 });
 
@@ -618,7 +620,10 @@ describe("bounded buffers and leftover logs", () => {
 
   it("removes run logs a dead bridge left behind, and only those", () => {
     const dir = tmp("agy-sweep-");
-    const dead = path.join(dir, "claude-agy-mcp-999999-abc");
+    // A pid that certainly belonged to a process that has exited: a fixed large
+    // number can be live on a host with a high pid_max.
+    const exited = spawnSync(process.execPath, ["-e", ""]).pid;
+    const dead = path.join(dir, `claude-agy-mcp-${exited}-abc`);
     const mine = path.join(dir, `claude-agy-mcp-${process.pid}-def`);
     const other = path.join(dir, "unrelated-999999-x");
     for (const d of [dead, mine, other]) mkdirSync(d);
