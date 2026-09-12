@@ -68,6 +68,25 @@ export interface Delegation {
    * could not be fingerprinted, which is not the same as "nothing happened".
    */
   wroteInReadOnlyMode?: boolean;
+  /**
+   * Whether a continuation actually continued.
+   *
+   * agy answers `--conversation <id>` for an id it cannot find from a brand-new
+   * conversation, exits 0, and only warns on the side. Present only when the call
+   * asked to continue a conversation *and* agy reported which one answered:
+   * `resumed: false` means the answer carries none of the history the caller
+   * believes it is continuing. Absent means there is nothing to claim.
+   */
+  continuation?: { requested: string; resumed: boolean };
+}
+
+/** Compares the conversation a call asked for with the one agy says answered. */
+function continuationOf(
+  requested: string | undefined,
+  reported: string | undefined,
+): Pick<Delegation, "continuation"> {
+  if (requested === undefined || reported === undefined) return {};
+  return { continuation: { requested, resumed: requested === reported } };
 }
 
 /** Thrown while AGY_ASK_MODEL is on and nobody has called `set_model` yet. */
@@ -439,6 +458,7 @@ export class Delegator {
             output: envelope.response.trim(),
             attempts,
             sessionId: envelope.conversationId ?? conversationId,
+            ...continuationOf(conversationId, envelope.conversationId),
             timedOut: false,
             deniedActions: envelope.deniedActions,
             usage: envelope.usage,
@@ -558,6 +578,7 @@ export class Delegator {
       // interactive session, which follow_up would then read and append to.
       // A run that reports no conversation id simply has no resumable session.
       ...(result.conversationId ? { sessionId: result.conversationId } : {}),
+      ...continuationOf(req.conversationId, result.conversationId),
       timedOut: result.timedOut,
       deniedActions: result.deniedActions,
       usage: result.usage,

@@ -83,3 +83,34 @@ describe("install-skills", () => {
     }
   });
 });
+
+/**
+ * The bin is a package selection, not a subcommand, and v3.0.0 documented it
+ * both wrong ways: `npx @pymodel/claude-agy-mcp-install-skills` is a package
+ * name to npx and 404s, and `npx @pymodel/claude-agy-mcp install-skills` starts
+ * the stdio server with a stray argument and hangs.
+ */
+describe("documented install command", () => {
+  const ROOT = path.join(import.meta.dirname, "..");
+  const WORKING = "npx --package @pymodel/claude-agy-mcp claude-agy-mcp-install-skills";
+
+  /** Invocations only: prose naming the broken forms as broken is allowed. */
+  const invocations = (rel: string) =>
+    readFileSync(path.join(ROOT, rel), "utf8")
+      .split("\n")
+      .map((line) => line.replace(/^\s*\*?\s*/, ""))
+      .filter((line) => line.startsWith("npx") && line.includes("install-skills"));
+
+  it.each(["README.md", "scripts/install-skills.mjs"])("%s never invokes a broken form", (rel) => {
+    for (const line of invocations(rel)) {
+      expect(line).not.toMatch(/^npx\s+(?:-y\s+)?@pymodel\/claude-agy-mcp-install-skills/);
+      expect(line).not.toMatch(/^npx\s+(?:-y\s+)?@pymodel\/claude-agy-mcp\s+install-skills/);
+    }
+  });
+
+  it("documents the working form, and the bin it names exists", () => {
+    expect(readFileSync(path.join(ROOT, "README.md"), "utf8")).toContain(WORKING);
+    const pkg = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"));
+    expect(pkg.bin["claude-agy-mcp-install-skills"]).toBe("scripts/install-skills.mjs");
+  });
+});

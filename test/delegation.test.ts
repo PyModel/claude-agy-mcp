@@ -331,7 +331,10 @@ describe("Delegator guards", () => {
 
 describe("Delegator warm sessions", () => {
   /** A resident agy that answers each written turn with a canned response. */
-  function residentAgy(behaviour: "answers" | "dies" | "stalls" = "answers") {
+  function residentAgy(
+    behaviour: "answers" | "dies" | "stalls" = "answers",
+    reportedId = "conv-1",
+  ) {
     const written: string[] = [];
     let emit: (chunk: string) => void = () => {};
     let exit: () => void = () => {};
@@ -348,7 +351,7 @@ describe("Delegator warm sessions", () => {
               `${JSON.stringify({
                 event: "result",
                 result: {
-                  conversation_id: "conv-1",
+                  conversation_id: reportedId,
                   status: "SUCCESS",
                   response: "warm answer",
                   num_turns: 2,
@@ -374,6 +377,23 @@ describe("Delegator warm sessions", () => {
   const followUp = () => ({
     ...request("follow_up", { session_id: "conv-1", question: "more?" }),
     conversationId: "conv-1",
+  });
+
+  // F-05. agy answers `--conversation <unknown>` from a brand-new conversation and
+  // exits 0, only warning on the side. A resident session must not pass that fork
+  // off as the continuation the caller asked for.
+  it("reports a warm follow-up that agy forked into a new conversation", async () => {
+    const resident = residentAgy("answers", "conv-new");
+    const delegator = delegatorFor(
+      agyWhere(),
+      { warmSessions: true },
+      { spawnSession: resident.spawnSession },
+    );
+    const d = await delegator.run(followUp());
+    expect(d.warm).toBe(true);
+    expect(d.sessionId).toBe("conv-new");
+    expect(d.continuation).toEqual({ requested: "conv-1", resumed: false });
+    delegator.shutdown();
   });
 
   it("answers a follow-up from a resident process instead of spawning agy again", async () => {
@@ -582,5 +602,43 @@ describe("read-only violation reporting (OWN-F3)", () => {
       snapshot: async () => ({ method: "none" as const }),
     }).delegator.run(request("delegate", { prompt: "x" }));
     expect(d.wroteInReadOnlyMode).toBeUndefined();
+  });
+});
+
+describe("conversation continuity reporting (F-05)", () => {
+  const followUp = (id: string) => ({
+    ...request("follow_up", { session_id: id, question: "more?" }),
+    conversationId: id,
+  });
+
+  it("reports a fork when agy answers from a different conversation than requested", async () => {
+    const agy = fakeAgy({ envelope: { response: "Hello!", conversationId: "brand-new" } });
+    const d = await delegatorFor(agy).run(followUp("never-issued"));
+    expect(valueOf(agy.runs[0]!, "--conversation")).toBe("never-issued");
+    expect(d.sessionId).toBe("brand-new");
+    expect(d.continuation).toEqual({ requested: "never-issued", resumed: false });
+  });
+
+  it("confirms a continuation when agy reports the conversation it was asked for", async () => {
+    const agy = fakeAgy({ envelope: { response: "more", conversationId: "abc" } });
+    const d = await delegatorFor(agy).run(followUp("abc"));
+    expect(d.continuation).toEqual({ requested: "abc", resumed: true });
+  });
+
+  it("makes no claim when agy reports no conversation id", async () => {
+    // Plain text output carries no envelope. "Could not tell" must not read as
+    // either "resumed" or "forked".
+    const agy = fakeAgy({ stdout: "plain answer" });
+    const d = await delegatorFor(agy, {}, { caps: oldCaps }).run({
+      ...followUp("abc"),
+      write: true,
+    });
+    expect(d.continuation).toBeUndefined();
+  });
+
+  it("makes no claim for a call that did not ask to continue anything", async () => {
+    const agy = fakeAgy({ envelope: { response: "hi", conversationId: "fresh" } });
+    const d = await delegatorFor(agy).run(request("delegate", { prompt: "x" }));
+    expect(d.continuation).toBeUndefined();
   });
 });

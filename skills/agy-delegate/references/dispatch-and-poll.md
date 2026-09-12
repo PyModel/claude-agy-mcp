@@ -71,6 +71,10 @@ What the header can carry:
 
 - **`session_id`** - keep it. It is the only handle for `follow_up`. It is present only when the run
   actually reported one; the bridge never substitutes a session it did not create.
+- **A `SESSION NOT RESUMED` warning** on a `follow_up`. agy answers a conversation id it cannot find
+  from a brand-new conversation and exits 0, so without this the fork would look like a continuation.
+  The answer has none of the earlier history: re-send the context, or deliberately continue the new
+  `session_id`. Structured responses carry the same fact as `resumed: false`.
 - **`model`** and, on a quota failover, a `failover:` note naming the exhausted model and its reset
   time.
 - **`tokens`** for the call.
