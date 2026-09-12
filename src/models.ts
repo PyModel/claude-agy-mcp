@@ -177,6 +177,19 @@ export class ModelRegistry {
 
   constructor(private fetchListing: () => Promise<string>) {}
 
+  /**
+   * Discards the cached listing so the next call re-reads `agy models`.
+   *
+   * The listing is cached for the process lifetime, which is right until agy is
+   * upgraded underneath a long-running bridge and renames a model. Every
+   * resolve then produces a name agy rejects, and `invalid_model` does not fail
+   * over, so the server used to stay bricked until someone restarted it.
+   */
+  invalidate(): void {
+    this.listing = null;
+    this.pending = null;
+  }
+
   async available(): Promise<ModelInfo[] | null> {
     if (this.listing) return this.listing;
     // Cache the promise so concurrent first calls share one fetch.

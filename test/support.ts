@@ -190,12 +190,12 @@ export const LISTING =
 export const toolNamed = (name: string): ToolDef => TOOLS.find((t) => t.name === name)!;
 
 export interface DelegatorOptions {
+  snapshot?: (cwd: string) => Promise<{ method: "git" | "scan" | "none"; digest?: string }>;
   /** The fake agy to run; omit for a delegator that never spawns successfully. */
   spawn?: SpawnAgy;
   cfg?: Partial<Config>;
   caps?: Capabilities;
   /** Raw contents of the sessions cache file. */
-  sessions?: string;
   /** Stands in for `agy models`; throw from here to test a degraded resolution. */
   listing?: () => Promise<string>;
   /** Resident-session processes, for the warm-session path. */
@@ -216,8 +216,10 @@ export function makeDelegator(opts: DelegatorOptions = {}): { cfg: Config; deleg
       spawn: opts.spawn,
       spawnSession: opts.spawnSession,
       timing: FAST_TIMING,
-      readSessions: async () => opts.sessions ?? "{}",
       cooldowns: new CooldownRegistry(new MemoryCooldownStore(), opts.now),
+      // No real filesystem in unit tests: the read-only-violation watcher has
+      // its own tests with an explicit stub.
+      snapshot: opts.snapshot ?? (async () => ({ method: "none" as const })),
     },
     opts.env ?? {},
   );

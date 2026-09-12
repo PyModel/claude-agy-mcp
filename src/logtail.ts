@@ -1,4 +1,5 @@
 import { open } from "node:fs/promises";
+import { StringDecoder } from "node:string_decoder";
 
 /**
  * Reads only what has been appended to a file since the last read.
@@ -14,6 +15,7 @@ import { open } from "node:fs/promises";
 export class LogTail {
   private offset = 0;
   private carry = "";
+  private decoder = new StringDecoder("utf8");
 
   constructor(private readonly path: string) {}
 
@@ -30,13 +32,16 @@ export class LogTail {
       if (size < this.offset) {
         this.offset = 0;
         this.carry = "";
+        this.decoder = new StringDecoder("utf8");
       }
       if (size <= this.offset) return;
       const length = size - this.offset;
       const buf = Buffer.allocUnsafe(length);
       const { bytesRead } = await handle.read(buf, 0, length, this.offset);
       this.offset += bytesRead;
-      this.carry += buf.subarray(0, bytesRead).toString("utf8");
+      // StringDecoder, not toString: a codepoint straddling this read's end
+      // would otherwise be corrupted into U+FFFD instead of joining the next.
+      this.carry += this.decoder.write(buf.subarray(0, bytesRead));
     } catch {
       // unreadable this tick; the next one retries from the same offset
     } finally {

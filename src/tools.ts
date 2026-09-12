@@ -76,11 +76,17 @@ export const ROUTING_ARGS = z.object({
 type ToolSchema = z.ZodObject<z.ZodRawShape>;
 
 /**
- * How much authority a tool's runs get.
+ * How much authority a tool's runs ask for.
  *
- * `read-only` pins `--mode plan`, so agy may read and search but its write and
- * execute actions come back in `denied_actions` — proof the run changed nothing,
- * rather than a promise that it didn't.
+ * `read-only` pins `--mode plan`. Read that as a request, not a guarantee:
+ * plan mode is advisory once `--dangerously-skip-permissions` is on, which is
+ * the default, and it was verified against agy 1.2.1 and 1.2.2 that a plan-mode
+ * run will still create files. `denied_actions` only ever populates when the
+ * permission grant is off, so its absence proves nothing either.
+ *
+ * The proof comes from outside agy: the bridge fingerprints the working tree
+ * around every plan-mode run and reports `wroteInReadOnlyMode` when the tree
+ * moved. That flag, not this type, is the evidence a caller should trust.
  */
 export type Privilege = "read-only" | "caller-chooses";
 
@@ -250,14 +256,22 @@ export const TOOLS: ToolDef[] = [
       "Continue a previous Antigravity session by session_id (returned by every other tool). " +
       "USE THIS for follow-up questions about a prior delegation — the full prior context " +
       "is already on agy's side, so you don't resend anything. Pass `model` to get a second " +
-      "opinion on the same history from a different model without re-sending it.",
+      "opinion on the same history from a different model without re-sending it. " +
+      "Read-only by default; pass `write: true` to rework a delegation that edited files.",
     schema: z.object({
       session_id: z.string().describe("The session id returned by a previous claude-agy-mcp call."),
       question: z.string().describe("The follow-up question."),
+      write: z
+        .boolean()
+        .optional()
+        .describe("Allow file edits and command execution. Off by default."),
       ...commonShape,
       ...structuredShape,
     }),
-    privilege: "read-only",
+    // The rework path for a write delegation runs through here, so it has to be
+    // able to write. It was pinned read-only, and only appeared to work because
+    // plan mode is advisory under the default permission grant.
+    privilege: "caller-chooses",
     prompt(args) {
       return args.question;
     },

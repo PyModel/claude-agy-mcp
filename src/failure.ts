@@ -1,4 +1,5 @@
 import type { AgyEnvelope } from "./envelope.js";
+import { QUOTA_RE } from "./quota.js";
 
 /**
  * Why a run did not produce a usable answer. The kind decides policy: only
@@ -41,11 +42,14 @@ const PATTERNS: [FailureKind, RegExp][] = [
     "unauthenticated",
     /unauthenticated|not logged in|please (re-?)?login|invalid credentials|PERMISSION_DENIED|UNAUTHENTICATED|\b401\b|\bauth\w*\s+(has\s+)?expired|\btoken\s+(has\s+)?expired|re-authenticate/i,
   ],
+  // Quota precedes network on purpose: a 429 whose message also mentions a
+  // reset connection must fail over to another model, not retry the exhausted
+  // one. The first matching pattern wins.
+  ["quota", QUOTA_RE],
   [
     "network",
     /dial tcp|no such host|connection refused|connection reset|network is unreachable|i\/o timeout|TLS handshake|EOF\b|ENOTFOUND|ECONNRESET|ETIMEDOUT/i,
   ],
-  ["quota", /RESOURCE_EXHAUSTED|\bcode 429\b|quota (exceeded|reached)/i],
 ];
 
 /** The kind implied by a message, or undefined when nothing matches. */

@@ -230,3 +230,23 @@ describe("pickTier", () => {
     expect(pickTier("GPT-OSS 120B", undefined, untiered)).toEqual({ model: "GPT-OSS 120B" });
   });
 });
+
+describe("version ordering (test-gap: fixtures could not distinguish it)", () => {
+  // Every model in the shared LISTING fixture (3.8/3.7/3.1/4.6) sorts the same
+  // way lexically and numerically, so a lexical implementation passed the whole
+  // suite. 3.10 vs 3.8 is the pair that tells them apart.
+  const listing =
+    "Fetching available models...\n" +
+    "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n" +
+    "gemini-3.10-flash-high\tGemini 3.10 Flash (High)\n" +
+    "gemini-3.9-flash-high\tGemini 3.9 Flash (High)\n";
+
+  it("treats 3.10 as newer than 3.9 and 3.8, not as the string '3.1'", async () => {
+    const reg = new ModelRegistry(async () => listing);
+    const r = await reg.resolveChain({
+      chain: ["gemini-flash@latest-high"],
+      defaultModel: "Gemini 3.8 Flash (High)",
+    });
+    expect(r.models[0]).toBe("Gemini 3.10 Flash (High)");
+  });
+});

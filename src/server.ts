@@ -5,6 +5,7 @@ import { loadConfig, timeoutFor, type Config } from "./config.js";
 import { FileCooldownStore } from "./cooldown-store.js";
 import { FilePreferenceStore } from "./preferences.js";
 import { Delegator, ModelNotChosenError, type Delegation } from "./delegation.js";
+import { redact } from "./egress.js";
 import { ModelRegistry, listModels } from "./models.js";
 import { CooldownRegistry } from "./quota.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
@@ -48,8 +49,8 @@ function deniedNote(d: Delegation): string | undefined {
   const names = [...new Set(d.deniedActions.map((a) => a.displayName || a.action))];
   return (
     `agy answered but ${d.deniedActions.length} tool action(s) were auto-denied ` +
-    `(${names.join(", ")}) — the answer may be incomplete. Read-only tools deny writes and ` +
-    `commands by design, so this is expected for a review; for work that must run commands, ` +
+    `(${names.join(", ")}) — the answer may be incomplete. Read-only tools ask agy to deny ` +
+    `writes and commands, so this is expected for a review; for work that must run commands, ` +
     `use \`delegate\` with \`write: true\`.`
   );
 }
@@ -84,6 +85,13 @@ export function renderDelegation(d: Delegation, timeoutSec: number, nonce: strin
   }
   const denied = deniedNote(d);
   if (denied) warnings.push(denied);
+  if (d.wroteInReadOnlyMode) {
+    warnings.push(
+      `READ-ONLY VIOLATION — this call ran in plan mode, and the working tree changed anyway. ` +
+        `agy does not enforce plan mode while permissions are skipped (AGY_SKIP_PERMISSIONS), ` +
+        `so treat the run as having had write access: inspect the tree before trusting it.`,
+    );
+  }
 
   const header = [
     `[claude-agy-mcp ${nonce}] ${meta.join(" | ")}`,
@@ -108,7 +116,7 @@ function structuredOf(d: Delegation): Record<string, unknown> | undefined {
   };
 }
 
-function progressReporter(extra: HandlerExtra | undefined) {
+function progressReporter(extra: HandlerExtra | undefined, scrub: boolean) {
   const token = extra?._meta?.progressToken;
   if (token === undefined || !extra?.sendNotification) return undefined;
   let last = 0;
@@ -124,7 +132,9 @@ function progressReporter(extra: HandlerExtra | undefined) {
         params: {
           progressToken: token,
           progress: p.stepIndex,
-          message: `agy ${p.stepType}: ${p.text.slice(-160)}`,
+          // Redact before slicing: this is live model output, and it reached the
+          // client unscrubbed even with AGY_REDACT on.
+          message: `agy ${p.stepType}: ${(scrub ? redact(p.text).text : p.text).slice(-160)}`,
         },
       })
       .catch(() => {});
@@ -191,10 +201,14 @@ function renderFanout(
   timeoutSec: number,
   nonce: string,
 ): string {
+  // SEC-M8. The leg heading has to carry the nonce like every other trusted
+  // line. A bare "### <model>" is forgeable from inside a leg's own payload, so
+  // one model could attribute fabricated text to another and defeat the whole
+  // point of comparing the legs.
   const parts = results.map((r) =>
     r.delegation
-      ? `### ${r.label}\n${renderDelegation(r.delegation, timeoutSec, nonce)}`
-      : `### ${r.label}\n[claude-agy-mcp ${nonce}] failed: ${r.error}`,
+      ? `[claude-agy-mcp ${nonce}] leg: ${r.label}\n${renderDelegation(r.delegation, timeoutSec, nonce)}`
+      : `[claude-agy-mcp ${nonce}] leg: ${r.label}\n[claude-agy-mcp ${nonce}] failed: ${r.error}`,
   );
   const answered = results.filter((r) => r.delegation).length;
   return (
@@ -323,7 +337,7 @@ export function createToolHandler(
       }
 
       const routing = ROUTING_ARGS.parse(args);
-      const onProgress = progressReporter(extra);
+      const onProgress = progressReporter(extra, cfg.redact);
       const base = {
         tool,
         args,
@@ -356,7 +370,10 @@ export function createToolHandler(
         isError: delegation.timedOut || undefined,
       };
     } catch (err) {
-      return failed((err as Error).message);
+      // Error text is a return path like any other: AgyFailure carries agy's
+      // stderr and the envelope's error string through verbatim.
+      const msg = (err as Error).message;
+      return failed(cfg.redact ? redact(msg).text : msg);
     }
   };
 }
@@ -381,11 +398,52 @@ export async function createServer(): Promise<McpServer> {
   return buildServer(cfg, caps);
 }
 
+/** The ways this process can end that the bridge needs to clean up for. */
+const SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+
+/**
+ * Runs `stop` once, on every ordinary way this process ends.
+ *
+ * The subtlety is that *adding* a signal listener suppresses Node's default
+ * termination, so a handler that only cleans up would leave the bridge running
+ * after a Ctrl-C. Rather than calling `process.exit` — which a library has no
+ * business doing to its host, and which would fire under a test runner or an
+ * embedder — the handler removes itself and re-raises the signal, letting the
+ * default disposition apply with the correct exit status.
+ *
+ * `stop` must be synchronous: the `exit` path cannot await.
+ */
+export function installShutdown(stop: () => void, proc: NodeJS.Process = process): void {
+  let done = false;
+  const run = (): void => {
+    if (done) return;
+    done = true;
+    try {
+      stop();
+    } catch {
+      // Shutdown must never itself throw on the way out.
+    }
+  };
+  proc.once("exit", run);
+  for (const sig of SHUTDOWN_SIGNALS) {
+    const handler = () => {
+      run();
+      proc.removeListener(sig, handler);
+      proc.kill(proc.pid, sig);
+    };
+    proc.once(sig, handler);
+  }
+}
+
 export function buildServer(cfg: Config, caps: Capabilities): McpServer {
   const delegator = new Delegator(cfg, new ModelRegistry(() => listModels(cfg.agyPath)), caps, {
     cooldowns: new CooldownRegistry(new FileCooldownStore()),
     preferences: new FilePreferenceStore(),
   });
+  // Resident agy children are spawned detached and with permissions skipped, so
+  // nothing reaps them if this process just exits. `shutdown()` existed but was
+  // never called, which is why a bridge restart left agy processes behind.
+  installShutdown(() => delegator.shutdown());
 
   const server = new McpServer({ name: "claude-agy-mcp", version: VERSION });
   // Client capabilities are only known after the handshake, so look them up per

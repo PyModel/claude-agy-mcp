@@ -2,7 +2,13 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { assertWithinRoots, canonical, PathNotAllowedError, redact } from "../src/egress.js";
+import {
+  assertWithinRoots,
+  canonical,
+  PathNotAllowedError,
+  redact,
+  redactDeep,
+} from "../src/egress.js";
 
 describe("assertWithinRoots", () => {
   it("allows anything when no roots are configured", () => {
@@ -86,5 +92,33 @@ describe("redact", () => {
   it("leaves ordinary prose and code alone", () => {
     const text = "function parse(input: string) { return input.trim(); }";
     expect(redact(text)).toEqual({ text, count: 0 });
+  });
+});
+
+describe("redaction coverage (SEC-M3)", () => {
+  it("scrubs underscore-style keys the sk- rule never matched", () => {
+    expect(redact("stripe sk_live_51H8xQrKlMnOpQrSt").text).toContain("[redacted stripe key]");
+    expect(redact("glpat-abcdefghijklmnopqrstu").text).toContain("[redacted gitlab token]");
+    expect(redact(`npm_${"a".repeat(36)}`).text).toContain("[redacted npm token]");
+    expect(redact("ASIAIOSFODNN7EXAMPLE").text).toContain("[redacted aws access key]");
+  });
+
+  it("scrubs credentials embedded in a connection string", () => {
+    const r = redact("postgres://admin:Sup3rS3cret@db.internal:5432/prod");
+    expect(r.text).not.toContain("Sup3rS3cret");
+    expect(r.text).toContain("postgres://admin:[redacted]@");
+    expect(r.count).toBe(1);
+  });
+
+  it("leaves an ordinary URL and a git SHA alone", () => {
+    const clean = "see https://github.com/o/r/commit/9f2a1c3d4e5f60718293a4b5c6d7e8f901234567";
+    expect(redact(clean).text).toBe(clean);
+    expect(redact(clean).count).toBe(0);
+  });
+
+  it("scrubs strings nested anywhere in structured output", () => {
+    const r = redactDeep({ files: [{ path: "a", body: "key AKIAIOSFODNN7EXAMPLE here" }], n: 3 });
+    expect(JSON.stringify(r.value)).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    expect(r.count).toBe(1);
   });
 });

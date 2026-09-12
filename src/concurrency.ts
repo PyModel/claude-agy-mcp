@@ -8,6 +8,14 @@
 
 type Release = () => void;
 
+/** A call that was cancelled before it ever started running. */
+export class AbortError extends Error {
+  constructor() {
+    super("agy run cancelled by client.");
+    this.name = "AbortError";
+  }
+}
+
 /** Counting semaphore: at most `limit` holders at a time, FIFO. */
 export class Semaphore {
   private active = 0;
@@ -23,14 +31,31 @@ export class Semaphore {
     return this.waiting.length;
   }
 
-  async acquire(): Promise<Release> {
+  async acquire(signal?: AbortSignal): Promise<Release> {
+    if (signal?.aborted) throw new AbortError();
     if (this.active < this.limit) {
       this.active++;
       return this.releaseOnce();
     }
     // The slot is handed over on release, so it is already ours when we wake:
     // decrementing first would let a fresh caller take it before we resumed.
-    await new Promise<void>((resolve) => this.waiting.push(resolve));
+    //
+    // A queued waiter that is cancelled leaves the queue instead of keeping its
+    // place: without this it still held its FIFO position, delayed everyone
+    // behind it, and then spawned a full agy process only to kill it.
+    await new Promise<void>((resolve, reject) => {
+      const waiter = () => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      const onAbort = () => {
+        const i = this.waiting.indexOf(waiter);
+        if (i >= 0) this.waiting.splice(i, 1);
+        reject(new AbortError());
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      this.waiting.push(waiter);
+    });
     return this.releaseOnce();
   }
 
@@ -45,8 +70,8 @@ export class Semaphore {
     };
   }
 
-  async run<T>(fn: () => Promise<T>): Promise<T> {
-    const release = await this.acquire();
+  async run<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const release = await this.acquire(signal);
     try {
       return await fn();
     } finally {
@@ -102,8 +127,19 @@ export class Admission {
     return this.semaphore.queued;
   }
 
-  run<T>(conversationId: string | undefined, fn: () => Promise<T>): Promise<T> {
-    const guarded = () => this.semaphore.run(fn);
+  /**
+   * Note that a fan-out whose legs share one `conversationId` runs strictly
+   * sequentially, whatever `AGY_MAX_CONCURRENCY` says. That is intended, not a
+   * throughput bug: agy keeps a per-conversation presence lock, so two
+   * simultaneous turns against one conversation corrupt it rather than finishing
+   * sooner. Fan out across conversations to get parallelism.
+   */
+  run<T>(
+    conversationId: string | undefined,
+    fn: () => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const guarded = () => this.semaphore.run(fn, signal);
     return conversationId ? this.mutex.run(conversationId, guarded) : guarded();
   }
 }
