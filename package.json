@@ -59,5 +59,8 @@
   },
   "lint-staged": {
     "*.{ts,js,json,md,yml,yaml}": "prettier --write"
+  },
+  "overrides": {
+    "esbuild": "^0.28.1"
   }
 }
