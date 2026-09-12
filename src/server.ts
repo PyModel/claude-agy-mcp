@@ -24,7 +24,7 @@ const SET_MODEL_ARGS = z.object({
 });
 
 /** Keep in sync with package.json — test/server.test.ts fails if they drift. */
-export const VERSION = "2.1.0";
+export const VERSION = "3.0.0";
 
 interface ToolResponse {
   [key: string]: unknown;
