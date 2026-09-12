@@ -1,11 +1,13 @@
 import { execFile } from "node:child_process";
-import { mkdtempSync, mkdirSync, existsSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, existsSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect } from "vitest";
 import {
+  carveOuts,
   confinedRoots,
   probeConfinement,
+  rootAncestors,
   SANDBOX_EXEC,
   sandboxConfinement,
   sandboxProfile,
@@ -41,10 +43,14 @@ function recordingConfinement() {
 
 describe("sandboxProfile", () => {
   it("names roots only by parameter, so no path can change the profile text", () => {
-    const profile = sandboxProfile(2);
+    const profile = sandboxProfile({ roots: 2, ancestors: 1, carveOuts: 1 });
     expect(profile).toContain('(deny file-write* (subpath (param "ROOT_0")))');
     expect(profile).toContain('(deny file-write* (subpath (param "ROOT_1")))');
+    expect(profile).toContain('(deny file-write-unlink (literal (param "ANCESTOR_0")))');
     expect(profile).toContain("(allow default)");
+    expect(profile.trimEnd().endsWith('(allow file-write* (subpath (param "CARVE_0")))')).toBe(
+      true,
+    );
   });
 
   it("passes a hostile root through -D, never into the profile", () => {
@@ -73,6 +79,28 @@ describe("confinedRoots", () => {
   it("keeps a root that does not exist", () => {
     expect(confinedRoots(["/no/such/root"])).toEqual(["/no/such/root"]);
   });
+
+  it("resolves a root that does not exist yet through its nearest existing ancestor", () => {
+    const base = mkdtempSync(join(tmpdir(), "confine-"));
+    const real = join(base, "real");
+    mkdirSync(real);
+    const link = join(base, "link");
+    symlinkSync(real, link);
+    const roots = confinedRoots([join(link, "not", "yet")]);
+    expect(roots.some((r) => r.endsWith("/real/not/yet"))).toBe(true);
+  });
+});
+
+describe("rootAncestors and carveOuts", () => {
+  it("lists every directory above a root except the filesystem root", () => {
+    expect(rootAncestors(["/a/b/c"]).sort()).toEqual(["/a", "/a/b"]);
+  });
+
+  it("carves out a state directory only when a root strictly contains it", () => {
+    expect(carveOuts(["/home/u"], ["/home/u/.gemini"])).toEqual(["/home/u/.gemini"]);
+    expect(carveOuts(["/home/u/.gemini"], ["/home/u/.gemini"])).toEqual([]);
+    expect(carveOuts(["/repo"], ["/home/u/.gemini"])).toEqual([]);
+  });
 });
 
 describe("probeConfinement", () => {
@@ -94,8 +122,17 @@ describe("probeConfinement", () => {
     expect(c.reason).toMatch(/Operation not permitted/);
   });
 
-  it("is available when the probe runs", async () => {
-    expect((await probeConfinement("darwin", async () => {})).available).toBe(true);
+  it("is available when the probe runs and its write is refused", async () => {
+    const c = await probeConfinement("darwin", async (_file, args) => {
+      if (args.includes("/usr/bin/touch")) throw new Error("Operation not permitted");
+    });
+    expect(c.available).toBe(true);
+  });
+
+  it("is unavailable when the probe's write is not refused", async () => {
+    const c = await probeConfinement("darwin", async () => {});
+    expect(c.available).toBe(false);
+    expect(c.reason).toMatch(/did not block a write/);
   });
 });
 
@@ -254,6 +291,44 @@ describe.runIf(process.platform === "darwin")("the real macOS sandbox", () => {
     expect(existsSync(join(inside, "blocked"))).toBe(false);
     expect(existsSync(join(inside, "dir"))).toBe(false);
     expect(existsSync(join(outside, "allowed"))).toBe(true);
+  });
+
+  it("blocks moving the tree out from under a root by renaming an ancestor", async () => {
+    const c = await probeConfinement();
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "confined-rename-")));
+    const root = join(base, "parent", "root");
+    mkdirSync(root, { recursive: true });
+    const script = `mv "${base}/parent" "${base}/moved" && echo x > "${base}/moved/root/escaped"; mv "${base}/moved" "${base}/parent"`;
+    const cmd = c.wrap("/bin/sh", ["-c", script], [root]);
+    await run(cmd.file, cmd.args);
+    expect(existsSync(join(root, "escaped"))).toBe(false);
+    expect(existsSync(join(base, "moved"))).toBe(false);
+  });
+
+  it("blocks a root that does not exist yet behind a symlinked parent", async () => {
+    const c = await probeConfinement();
+    const base = mkdtempSync(join(tmpdir(), "confined-new-"));
+    const real = join(base, "real");
+    mkdirSync(real);
+    symlinkSync(real, join(base, "link"));
+    const root = join(base, "link", "new");
+    const cmd = c.wrap("/bin/sh", ["-c", `mkdir -p "${root}" && echo x > "${root}/f"`], [root]);
+    await run(cmd.file, cmd.args);
+    expect(existsSync(join(real, "new", "f"))).toBe(false);
+  });
+
+  it("keeps a state directory inside a root writable", async () => {
+    const root = mkdtempSync(join(tmpdir(), "confined-home-"));
+    const state = join(root, ".gemini");
+    mkdirSync(state);
+    const cmd = sandboxConfinement([state]).wrap(
+      "/bin/sh",
+      ["-c", `echo x > "${state}/ok"; echo x > "${root}/blocked"`],
+      [root],
+    );
+    await run(cmd.file, cmd.args);
+    expect(existsSync(join(state, "ok"))).toBe(true);
+    expect(existsSync(join(root, "blocked"))).toBe(false);
   });
 
   it("blocks a write that reaches the root through a symlinked spelling", async () => {

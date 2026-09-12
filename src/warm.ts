@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { resolve as resolvePath } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { Capabilities } from "./capabilities.js";
 import type { Confinement } from "./confine.js";
@@ -99,6 +100,11 @@ const spawnSessionProcess: SpawnSession = (file, args, opts) => {
 const MAX_SESSION_BUFFER = MAX_STDOUT_CHARS;
 
 /** The driver could not answer this turn; the caller should run cold instead. */
+/** Order and spelling of the roots do not change what a sandbox confines. */
+function confinementKey(roots: string[] | undefined): string {
+  return JSON.stringify([...new Set((roots ?? []).map((r) => resolvePath(r)))].sort());
+}
+
 export class WarmUnavailable extends Error {
   constructor(reason: string) {
     super(reason);
@@ -238,14 +244,21 @@ export class WarmSessions {
     // SEC-M6. A resident process keeps the cwd and --add-dir it was started with.
     // Reusing it for a turn whose cwd is different runs that turn somewhere the
     // caller did not ask for and did not have containment-checked for this call.
-    if (existing && existing.cwd !== cwd) {
-      throw new WarmUnavailable("resident session belongs to a different working directory");
-    }
     // A process keeps its sandbox for life, so a turn needing different
-    // confinement must not borrow one started under another.
-    const confinedTo = JSON.stringify(opts.confineTo ?? []);
-    if (existing && existing.confinedTo !== confinedTo) {
-      throw new WarmUnavailable("resident session was started with different write confinement");
+    // confinement must not borrow one started under another. Either mismatch
+    // sends this turn cold, which leaves the resident's history behind, so an
+    // idle resident is dropped rather than reused by a later turn.
+    const confinedTo = confinementKey(opts.confineTo);
+    const mismatch = !existing
+      ? undefined
+      : existing.cwd !== cwd
+        ? "resident session belongs to a different working directory"
+        : existing.confinedTo !== confinedTo
+          ? "resident session was started with different write confinement"
+          : undefined;
+    if (existing && mismatch) {
+      if (!existing.busy) this.drop(existing, mismatch);
+      throw new WarmUnavailable(mismatch);
     }
     const session = existing ?? this.start(conversationId, cwd, opts.confineTo);
     if (!session.alive) {
@@ -344,7 +357,7 @@ export class WarmSessions {
     const session: Session = {
       key: conversationId,
       cwd,
-      confinedTo: JSON.stringify(confineTo ?? []),
+      confinedTo: confinementKey(confineTo),
       proc,
       buffer: "",
       alive: true,

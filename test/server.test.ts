@@ -432,6 +432,13 @@ describe("createToolHandler", () => {
     expect(agy.runs).toHaveLength(0);
   });
 
+  it("says read-only runs are refused, not watched, under AGY_READ_ONLY_ENFORCEMENT=require", async () => {
+    const { handler } = handlerFor("agy_status", { readOnlyEnforcement: "require" });
+    const text = textOf(await handler({}));
+    expect(text).toContain("read-only runs: refused, they cannot be confined");
+    expect(text).not.toContain("watched");
+  });
+
   it("strict mode marks a fan-out whose every leg failed, like any other failure", async () => {
     const { handler } = handlerFor("delegate_many", { onFailure: "strict" }, exploding());
     const res = await handler({ prompt: "q", models: ["Gemini 3.8 Flash (High)"] });

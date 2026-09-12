@@ -188,9 +188,13 @@ function renderStatus(
       ? `tokens: ${status.spent} of ${status.budget} budget`
       : `tokens: ${status.spent} (no budget set)`,
     `warm sessions: ${status.warm.resident} resident`,
-    status.readOnly.enforced
-      ? `read-only runs: enforced, writes into their roots blocked (AGY_READ_ONLY_ENFORCEMENT=${status.readOnly.policy})`
-      : `read-only runs: watched, not enforced — ${status.readOnly.reason} (AGY_READ_ONLY_ENFORCEMENT=${status.readOnly.policy})`,
+    `read-only runs: ${
+      status.readOnly.enforced
+        ? "enforced, writes into their roots blocked"
+        : status.readOnly.policy === "require"
+          ? `refused, they cannot be confined — ${status.readOnly.reason}`
+          : `watched, not enforced — ${status.readOnly.reason}`
+    } (AGY_READ_ONLY_ENFORCEMENT=${status.readOnly.policy})`,
   ];
   if (status.usage.length) {
     lines.push("", "usage by model:");

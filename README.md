@@ -387,7 +387,10 @@ Deliberately not addressed, so they are not mistaken for oversights:
   `AGY_READ_ONLY_ENFORCEMENT=require` to refuse such runs instead.
 - **The macOS block is by path.** A file inside a root that already has a hard link outside
   every root can be rewritten through that outside link. Creating such a link during the run
-  is blocked, and the working-tree fingerprint still reports the change.
+  is blocked, and so is renaming any directory above a root to move the tree out from under
+  its rule. The working-tree fingerprint still reports a change made through an old link.
+- **A root that holds agy's state stays partly writable.** When a root contains `~/.gemini`,
+  that directory is exempt so agy can still run; a write there is not blocked.
 - **A fan-out sharing one `session_id` runs sequentially.** agy holds a
   per-conversation lock, so concurrent turns against one conversation would corrupt it.
   Fan out across conversations for parallelism.

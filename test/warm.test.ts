@@ -307,3 +307,42 @@ describe("ambiguous turn outcomes (COR-M8)", () => {
     expect(f.written).toHaveLength(1);
   });
 });
+
+describe("WarmSessions mismatch", () => {
+  const confinement = {
+    available: true,
+    wrap: (file: string, args: string[]) => ({ file, args }),
+  };
+
+  it("drops an idle resident when a turn needs a different cwd or confinement", async () => {
+    for (const next of [
+      { cwd: "/elsewhere", confineTo: ["/repo"] },
+      { cwd: "/repo", confineTo: undefined },
+    ]) {
+      const s = fakeSession();
+      const warm = new WarmSessions(cfg, fullCaps, { spawnSession: s.spawnSession, confinement });
+      const first = warm.turn("conv-1", "/repo", "q", { ...TURN, confineTo: ["/repo"] });
+      s.answer("ok");
+      await first;
+      await expect(
+        warm.turn("conv-1", next.cwd, "q2", { ...TURN, confineTo: next.confineTo }),
+      ).rejects.toThrow(WarmUnavailable);
+      expect(warm.stats().resident).toBe(0);
+      expect(s.kills.length).toBeGreaterThan(0);
+      warm.shutdown();
+    }
+  });
+
+  it("reuses a resident when the same roots arrive in another order or spelling", async () => {
+    const s = fakeSession();
+    const warm = new WarmSessions(cfg, fullCaps, { spawnSession: s.spawnSession, confinement });
+    const first = warm.turn("conv-1", "/repo", "q", { ...TURN, confineTo: ["/repo", "/other"] });
+    s.answer("ok");
+    await first;
+    const second = warm.turn("conv-1", "/repo", "q2", { ...TURN, confineTo: ["/other/", "/repo"] });
+    s.answer("ok2");
+    await second;
+    expect(s.spawned).toHaveLength(1);
+    warm.shutdown();
+  });
+});
