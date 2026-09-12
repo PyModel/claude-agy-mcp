@@ -206,6 +206,89 @@ describe("working-tree fingerprint", () => {
     expect(await changed(dir, () => chmodSync(path.join(dir, "tracked.txt"), 0o755))).toBe(true);
   });
 
+  it("sees a write to a file git ignores", async () => {
+    // A plan-mode run that writes `.env` used to pass as read-only: git never
+    // lists ignored files, and the fingerprint only asked git.
+    const dir = repo();
+    writeFileSync(path.join(dir, ".gitignore"), ".env\nbuild/\n");
+    expect(await changed(dir, () => writeFileSync(path.join(dir, ".env"), "SECRET=1\n"))).toBe(
+      true,
+    );
+  });
+
+  it("sees a file added to an ignored directory, and a rewrite of an ignored file", async () => {
+    const dir = repo();
+    writeFileSync(path.join(dir, ".gitignore"), ".env\nbuild/\n");
+    mkdirSync(path.join(dir, "build"));
+    writeFileSync(path.join(dir, ".env"), "A=1\n");
+    expect(await changed(dir, () => writeFileSync(path.join(dir, "build", "out.js"), "x"))).toBe(
+      true,
+    );
+    expect(await changed(dir, () => writeFileSync(path.join(dir, ".env"), "A=22\n"))).toBe(true);
+  });
+
+  it("sees a rewrite of a file inside an ignored directory, not only at its top", async () => {
+    const dir = repo();
+    writeFileSync(path.join(dir, ".gitignore"), "build/\n");
+    mkdirSync(path.join(dir, "build", "sub"), { recursive: true });
+    writeFileSync(path.join(dir, "build", "sub", "a.js"), "one");
+    expect(
+      await changed(dir, () => writeFileSync(path.join(dir, "build", "sub", "a.js"), "two!")),
+    ).toBe(true);
+  });
+
+  it("keeps the git method, and sees a write, when an untracked nested repository is present", async () => {
+    const dir = repo();
+    mkdirSync(path.join(dir, "nested"));
+    git(path.join(dir, "nested"), "init", "-q");
+    writeFileSync(path.join(dir, "nested", "f.txt"), "one");
+    expect((await snapshotTree(dir)).method).toBe("git");
+    expect(await changed(dir, () => writeFileSync(path.join(dir, "nested", "f.txt"), "two!"))).toBe(
+      true,
+    );
+  });
+
+  it("keeps the git method when an untracked file name contains a newline", async () => {
+    const dir = repo();
+    const odd = path.join(dir, "odd\nname.txt");
+    writeFileSync(odd, "one");
+    expect((await snapshotTree(dir)).method).toBe("git");
+    expect(await changed(dir, () => writeFileSync(odd, "two!"))).toBe(true);
+  });
+
+  it("cuts a huge ignored directory at a fixed count, so an unchanged tree still compares equal", async () => {
+    const dir = repo();
+    writeFileSync(path.join(dir, ".gitignore"), "cache/\n");
+    mkdirSync(path.join(dir, "cache"));
+    for (let i = 0; i < 1200; i++) writeFileSync(path.join(dir, "cache", `f${i}.bin`), "x");
+    expect((await snapshotTree(dir)).method).toBe("git");
+    expect(await changed(dir, () => {})).toBe(false);
+    // f0 sorts first, so it is inside the walked prefix.
+    expect(await changed(dir, () => writeFileSync(path.join(dir, "cache", "f0.bin"), "yy"))).toBe(
+      true,
+    );
+  });
+
+  it("covers an untracked directory whose whole content is ignored, once", async () => {
+    // git lists both `u/` and `u/build/` here; the parent walk covers the child.
+    const dir = repo();
+    writeFileSync(path.join(dir, ".gitignore"), "build/\n");
+    mkdirSync(path.join(dir, "u", "build"), { recursive: true });
+    writeFileSync(path.join(dir, "u", "build", "o.js"), "one");
+    expect(await changed(dir, () => {})).toBe(false);
+    expect(
+      await changed(dir, () => writeFileSync(path.join(dir, "u", "build", "o.js"), "two!")),
+    ).toBe(true);
+  });
+
+  it("still reports an untouched repository with ignored entries as unchanged", async () => {
+    const dir = repo();
+    writeFileSync(path.join(dir, ".gitignore"), "node_modules/\n");
+    mkdirSync(path.join(dir, "node_modules", "pkg"), { recursive: true });
+    writeFileSync(path.join(dir, "node_modules", "pkg", "index.js"), "x");
+    expect(await changed(dir, () => {})).toBe(false);
+  });
+
   it("reports unknown when the two sides were taken by different methods", () => {
     expect(treeChanged({ method: "git", digest: "a" }, { method: "scan", digest: "b" })).toBe(
       undefined,

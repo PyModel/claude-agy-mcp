@@ -1,6 +1,6 @@
 {
   "name": "@pymodel/claude-agy-mcp",
-  "version": "3.0.3",
+  "version": "3.0.4",
   "description": "MCP bridge that lets Claude Code delegate heavy tasks to the Antigravity CLI (agy) — purpose-built tools, model routing with fallback, and multi-turn session continuity.",
   "mcpName": "io.github.PyModel/claude-agy-mcp",
   "type": "module",
@@ -20,7 +20,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\" && esbuild src/index.ts --bundle --platform=node --format=esm --target=node18 --external:@modelcontextprotocol/sdk --external:zod --outfile=dist/index.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",
@@ -53,14 +53,15 @@
     "husky": "^9.1.7",
     "lint-staged": "^17.5.1",
     "prettier": "^3.8.4",
-    "tsup": "^8.0.0",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.0",
+    "esbuild": "^0.28.2"
   },
   "lint-staged": {
     "*.{ts,js,json,md,yml,yaml}": "prettier --write"
   },
-  "overrides": {
-    "esbuild": "^0.28.1"
-  }
+  "os": [
+    "darwin",
+    "linux"
+  ]
 }

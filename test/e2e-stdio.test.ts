@@ -43,6 +43,9 @@ function sandbox() {
   execFileSync("mkdir", ["-p", pids, work]);
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
+    // Inherited from an agent host, this depth would make the server refuse to
+    // delegate at all; the suite is the top of its own chain.
+    AGY_DELEGATION_DEPTH: "0",
     AGY_PATH: FAKE_AGY,
     AGY_ASK_MODEL: "false",
     AGY_WARM_SESSIONS: "false",
@@ -60,7 +63,7 @@ const textOf = (res: unknown): string =>
 describe("the built server over stdio", () => {
   beforeAll(() => {
     // Always rebuild: a stale bundle would let this suite pass against old code.
-    execFileSync("npx", ["tsup"], { cwd: ROOT, stdio: "ignore" });
+    execFileSync("npm", ["run", "build"], { cwd: ROOT, stdio: "ignore" });
   }, 60_000);
 
   const clients: Client[] = [];

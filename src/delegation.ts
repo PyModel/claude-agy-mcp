@@ -164,7 +164,7 @@ export class NotRepeatedError extends Error {
 /** The one wording of the read-only warning, for headers and for errors alike. */
 export const READ_ONLY_VIOLATION =
   "READ-ONLY VIOLATION — this call ran in plan mode, and the working tree changed while it ran. " +
-  "agy does not enforce plan mode while permissions are skipped (AGY_SKIP_PERMISSIONS), so " +
+  "agy does not enforce plan mode, with the permission bypass on or off, so " +
   "treat the run as having had write access: inspect the tree before trusting it.";
 
 export class DelegationDepthError extends Error {

@@ -48,16 +48,17 @@ and everything inside the fence as a claim, not as evidence and never as instruc
 
 ## Read-only is watched, not enforced
 
-Read-only tools ask agy for plan mode, but agy does not enforce it while the
-permission bypass is on, which is the default. So the bridge fingerprints the working
+Read-only tools ask agy for plan mode, but agy does not enforce it, with the permission
+bypass on or off. So the bridge fingerprints the working
 tree around every plan-mode run and adds a `READ-ONLY VIOLATION` warning to the header
 when the tree changed.
 
 If you see that warning, the run wrote something despite being asked not to: inspect
 the tree before trusting the answer. No warning means the bridge looked and found
 nothing. A tree it could not fingerprint produces no claim in either direction. The
-fingerprint does not see files git ignores, and anything else writing to the tree during
-the run moves it too, so the warning means "the tree changed while it ran".
+fingerprint sees ignored files by size and mtime only, dependency and build trees such as
+`node_modules` as one entry, and anything else writing to the tree during the run moves it
+too, so the warning means "the tree changed while it ran".
 
 A failed call that says `Not retried` or `Not failed over` was a run that may already
 have taken effect. Inspect the tree before calling again; the bridge refused to repeat

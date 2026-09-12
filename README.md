@@ -311,17 +311,22 @@ All optional, via environment variables:
 > defaults to `true` because headless agy auto-denies _every_ permissioned tool without it — including
 > `read_file` — and a single denial ends the run with an empty response, so a bridge without the grant
 > cannot read, search or fetch anything. The read-only tools pass `--mode plan`, but **verified
-> against agy 1.2.1 and again against 1.2.2: plan mode is advisory once permissions are skipped.** agy
-> creates files in a `--mode plan --dangerously-skip-permissions` run. Treat every run as having the
-> access of the user running the bridge.
+> against agy 1.2.1 and again against 1.2.2: plan mode is advisory, with the permission bypass on or
+> off.** agy creates files in a `--mode plan` run either way. Treat every run as having the access of
+> the user running the bridge.
 >
 > Because it cannot be prevented, it is **detected**: the bridge fingerprints the working tree around
 > every plan-mode run and adds a `READ-ONLY VIOLATION` warning to the response header when the tree
 > changed. No warning means it looked and found nothing; a tree it could not fingerprint produces no
 > claim in either direction. The fingerprint covers `cwd` and every directory the call hands agy. In
-> a git repository it covers HEAD, the content and mode of every tracked change, and the content of
-> every untracked file — but not files git ignores, so a write to a build output or `.env` is not
-> seen. Outside git it compares path, type, size, mode and mtime, bounded to 20,000 entries and 10s.
+> a git repository it covers HEAD, the content and mode of every tracked change, the content of
+> every untracked file, and the mode, size and mtime of every ignored entry, ignored directories
+> walked the same way. A dependency or build tree at the repository top (`node_modules`, `.venv`,
+> `venv`, `__pycache__`, `.next`, `dist`) counts as one entry — so a `.env` or `build/out.js` written
+> in plan mode is seen, while a rewrite deep inside `node_modules` is not. Outside git it compares
+> path, type, size, mode and mtime. Both are bounded to 20,000 entries and 10s. Measured on an Apple
+> M5 Max: about 150 ms per snapshot on a clean 3,500-file repository, and about 1.1 s
+> with 300 modified and 3,000 untracked files; two snapshots bracket each run.
 > Anything else writing to the tree while the run is live (an editor, a watcher, a parallel write
 > delegation) also moves it: the warning means the tree changed during the run, not proof of who
 > changed it. A plan run that wrote and then failed carries the warning in its error. That warning, not the tool's name and not the absence of a
@@ -373,7 +378,7 @@ Deliberately not addressed, so they are not mistaken for oversights:
 npm install
 npm test           # vitest unit tests (exec mocked — no agy needed)
 npm run typecheck
-npm run build      # tsup → dist/index.js
+npm run build      # esbuild → dist/index.js
 ```
 
 ## Contributing
