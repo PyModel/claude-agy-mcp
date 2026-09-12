@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import type { Capabilities } from "./capabilities.js";
+import type { Confinement } from "./confine.js";
 import type { Config } from "./config.js";
 import { MAX_STDOUT_CHARS } from "./runner.js";
 import { parseStreamEvents, type AgyEnvelope, type AgyUsage } from "./envelope.js";
@@ -137,6 +138,8 @@ interface Session {
   key: string;
   /** The directory this process was started in; a turn elsewhere must not reuse it. */
   cwd: string;
+  /** The roots it is confined against, as one comparable string; empty when unconfined. */
+  confinedTo: string;
   proc: SessionProcess;
   buffer: string;
   alive: boolean;
@@ -162,6 +165,8 @@ export interface WarmDeps {
   /** Extra environment for every resident process, e.g. the delegation-depth counter. */
   env?: Record<string, string>;
   now?: () => number;
+  /** Carries out `TurnOptions.confineTo`. */
+  confinement?: Confinement;
 }
 
 export interface WarmStats {
@@ -174,6 +179,8 @@ export interface TurnOptions {
   timeoutMs: number;
   signal?: AbortSignal;
   onProgress?: (text: string) => void;
+  /** Roots the resident process must be denied writes beneath, fixed for its whole life. */
+  confineTo?: string[];
 }
 
 function usageDelta(now: AgyUsage, before: AgyUsage): AgyUsage {
@@ -234,7 +241,13 @@ export class WarmSessions {
     if (existing && existing.cwd !== cwd) {
       throw new WarmUnavailable("resident session belongs to a different working directory");
     }
-    const session = existing ?? this.start(conversationId, cwd);
+    // A process keeps its sandbox for life, so a turn needing different
+    // confinement must not borrow one started under another.
+    const confinedTo = JSON.stringify(opts.confineTo ?? []);
+    if (existing && existing.confinedTo !== confinedTo) {
+      throw new WarmUnavailable("resident session was started with different write confinement");
+    }
+    const session = existing ?? this.start(conversationId, cwd, opts.confineTo);
     if (!session.alive) {
       this.drop(session, "process is gone");
       throw new WarmUnavailable("resident agy session had exited");
@@ -289,7 +302,7 @@ export class WarmSessions {
     return this.deps.now?.() ?? Date.now();
   }
 
-  private start(conversationId: string, cwd: string): Session {
+  private start(conversationId: string, cwd: string, confineTo?: string[]): Session {
     if (!this.evictIfFull()) {
       throw new WarmUnavailable(`all ${this.cfg.warmMax} resident sessions are busy`);
     }
@@ -313,7 +326,14 @@ export class WarmSessions {
     const spawnFn = this.deps.spawnSession ?? spawnSessionProcess;
     let proc: SessionProcess;
     try {
-      proc = spawnFn(this.cfg.agyPath, args, {
+      let command = { file: this.cfg.agyPath, args };
+      if (confineTo) {
+        if (!this.deps.confinement?.available) {
+          throw new Error("write confinement is unavailable");
+        }
+        command = this.deps.confinement.wrap(this.cfg.agyPath, args, confineTo);
+      }
+      proc = spawnFn(command.file, command.args, {
         cwd,
         ...(this.deps.env ? { env: this.deps.env } : {}),
       });
@@ -324,6 +344,7 @@ export class WarmSessions {
     const session: Session = {
       key: conversationId,
       cwd,
+      confinedTo: JSON.stringify(confineTo ?? []),
       proc,
       buffer: "",
       alive: true,

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { parseEnvelope } from "../src/envelope.js";
 import { classifyRun, classifyMessage, policyFor } from "../src/failure.js";
-import { DENIED_ENVELOPE, ERROR_ENVELOPE, SUCCESS_ENVELOPE } from "./fixtures.js";
+import { DENIED_ENVELOPE, ERROR_ENVELOPE, LOG_429, SUCCESS_ENVELOPE } from "./fixtures.js";
 
 const run = (stdout: string, exitCode = 0, stderr = "") =>
   classifyRun({ envelope: parseEnvelope(stdout), exitCode, stderr });
@@ -45,6 +45,41 @@ describe("classifyMessage", () => {
 
   it("returns undefined when nothing matches", () => {
     expect(classifyMessage("the disk is on fire")).toBeUndefined();
+  });
+});
+
+/**
+ * Error envelopes captured verbatim from agy 1.2.2 on 2026-09-12. The classifier
+ * matches agy's text, so these pin it to what agy really prints: an upgrade that
+ * rewords an error fails here instead of silently changing the policy.
+ */
+describe("real agy 1.2.2 error envelopes", () => {
+  const usage =
+    '"duration_seconds":0,"num_turns":0,"usage":{"input_tokens":0,"output_tokens":0,' +
+    '"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":0}';
+  const envelope = (error: string) =>
+    `{"conversation_id":"","status":"ERROR","response":"","error":${JSON.stringify(error)},${usage}}`;
+
+  it.each([
+    [
+      "an unknown --model",
+      'invalid model selection (--model "Bogus Model 9" --effort ""): model Bogus Model 9 is not ' +
+        "recognized as a known model or custom model in settings\nAvailable models:\n  Gemini 3.8 Flash (High)",
+      "invalid_model",
+    ],
+    [
+      "a refused connection",
+      'Eligibility check failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist": ' +
+        "proxyconnect tcp: dial tcp 127.0.0.1:9: connect: connection refused",
+      "network",
+    ],
+    ["a machine with no login", "authentication failed or timed out", "unauthenticated"],
+  ])("classifies %s", (_what, error, kind) => {
+    expect(run(envelope(error), 1)).toMatchObject({ kind });
+  });
+
+  it("classifies the quota line agy writes to its log", () => {
+    expect(classifyMessage(LOG_429)).toBe("quota");
   });
 });
 

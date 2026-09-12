@@ -34,6 +34,7 @@ const exploding = (): ReturnType<typeof fakeAgy> => ({
     throw new Error("kaboom");
   },
   runs: [],
+  files: [],
   envs: [],
   kills: [],
   modelOf: () => undefined,

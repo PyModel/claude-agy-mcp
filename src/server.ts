@@ -2,15 +2,11 @@ import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { probeCapabilities, type Capabilities } from "./capabilities.js";
+import { probeConfinement, unavailableConfinement, type Confinement } from "./confine.js";
 import { loadConfig, timeoutFor, type Config } from "./config.js";
 import { FileCooldownStore } from "./cooldown-store.js";
 import { FilePreferenceStore } from "./preferences.js";
-import {
-  Delegator,
-  ModelNotChosenError,
-  READ_ONLY_VIOLATION,
-  type Delegation,
-} from "./delegation.js";
+import { Delegator, ModelNotChosenError, treeMovedWarning, type Delegation } from "./delegation.js";
 import { redact } from "./egress.js";
 import { InvalidRequestError } from "./failure.js";
 import { removeLogDir, sweepStaleLogs } from "./runner.js";
@@ -84,6 +80,13 @@ export function renderDelegation(d: Delegation, timeoutSec: number, nonce: strin
     `model: ${d.model ?? (d.warm ? "the conversation's own" : "agy default")}`,
   ];
   if (d.warm) meta.push("warm session");
+  if (d.readOnly) {
+    meta.push(
+      d.readOnly.enforced
+        ? "read-only: enforced, writes into the workspace blocked"
+        : `read-only: watched, not enforced (${d.readOnly.reason})`,
+    );
+  }
   if (d.note) meta.push(`note: ${d.note}`);
   if (d.attempts.length) meta.push(`failover: ${d.attempts.join("; ")}`);
   if (d.sessionId) meta.push(`session: ${d.sessionId} (use follow_up to continue)`);
@@ -102,7 +105,7 @@ export function renderDelegation(d: Delegation, timeoutSec: number, nonce: strin
   }
   const denied = deniedNote(d);
   if (denied) warnings.push(denied);
-  if (d.wroteInReadOnlyMode) warnings.push(READ_ONLY_VIOLATION);
+  if (d.wroteInReadOnlyMode) warnings.push(treeMovedWarning(d.readOnly));
 
   if (d.continuation && !d.continuation.resumed) {
     warnings.push(
@@ -185,6 +188,9 @@ function renderStatus(
       ? `tokens: ${status.spent} of ${status.budget} budget`
       : `tokens: ${status.spent} (no budget set)`,
     `warm sessions: ${status.warm.resident} resident`,
+    status.readOnly.enforced
+      ? `read-only runs: enforced, writes into their roots blocked (AGY_READ_ONLY_ENFORCEMENT=${status.readOnly.policy})`
+      : `read-only runs: watched, not enforced — ${status.readOnly.reason} (AGY_READ_ONLY_ENFORCEMENT=${status.readOnly.policy})`,
   ];
   if (status.usage.length) {
     lines.push("", "usage by model:");
@@ -415,7 +421,20 @@ export async function createServer(): Promise<McpServer> {
   const cfg = loadConfig();
   // Logs a crashed bridge left behind hold prompt text; clear them before adding more.
   sweepStaleLogs();
-  const caps = await probeCapabilities(cfg.agyPath);
+  const [caps, confinement] = await Promise.all([
+    probeCapabilities(cfg.agyPath),
+    cfg.readOnlyEnforcement === "off"
+      ? Promise.resolve(unavailableConfinement("AGY_READ_ONLY_ENFORCEMENT is off"))
+      : probeConfinement(),
+  ]);
+  if (!confinement.available && cfg.readOnlyEnforcement !== "off") {
+    console.error(
+      `claude-agy-mcp: read-only runs cannot be confined here (${confinement.reason}); ` +
+        (cfg.readOnlyEnforcement === "require"
+          ? "AGY_READ_ONLY_ENFORCEMENT=require, so read-only tools will refuse to run."
+          : "they will be watched, not enforced."),
+    );
+  }
   // A pre-flight failure here is the difference between "every call fails with a
   // confusing argument error" and one clear line before the first call.
   if (caps.version.startsWith("unknown")) {
@@ -430,7 +449,7 @@ export async function createServer(): Promise<McpServer> {
         `those features are disabled for this session.`,
     );
   }
-  return buildServer(cfg, caps);
+  return buildServer(cfg, caps, confinement);
 }
 
 /** The ways this process can end that the bridge needs to clean up for. */
@@ -470,8 +489,13 @@ export function installShutdown(stop: () => void, proc: NodeJS.Process = process
   }
 }
 
-export function buildServer(cfg: Config, caps: Capabilities): McpServer {
+export function buildServer(
+  cfg: Config,
+  caps: Capabilities,
+  confinement: Confinement = unavailableConfinement("write confinement was not set up"),
+): McpServer {
   const delegator = new Delegator(cfg, new ModelRegistry(() => listModels(cfg.agyPath)), caps, {
+    confinement,
     cooldowns: new CooldownRegistry(new FileCooldownStore()),
     preferences: new FilePreferenceStore(),
   });

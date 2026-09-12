@@ -95,9 +95,11 @@ mcp__claude-agy-mcp__delegate(
 )
 ```
 
-**A read-only dispatch is watched, not enforced.** The bridge fingerprints the working tree around
-every plan-mode run and reports `READ-ONLY VIOLATION` in the response header if the tree moved. You do
-not have to snapshot anything yourself; you do have to read that warning when it appears.
+**A read-only dispatch is enforced on macOS and watched elsewhere.** On macOS the bridge runs it
+under a sandbox that blocks writes into its roots. Everywhere, it fingerprints the working tree around
+the run and reports `READ-ONLY VIOLATION` (an unenforced run wrote) or `WORKING TREE CHANGED` (the tree
+moved despite enforcement) in the response header. You do not have to snapshot anything yourself; you
+do have to read the header's `read-only:` field and any warning.
 
 The response is fenced with a per-call nonce and carries a `session_id` in its header when the run
 produced one. **Keep that `session_id`** - it is how you rework without resending the brief. Everything between the "agy output
@@ -162,13 +164,18 @@ default (`AGY_SKIP_PERMISSIONS=true`). The human accepted that trade-off on 2026
 
 What that means in practice, and what the bridge does about it:
 
-- **Read-only is a request, not an enforcement.** Read-only tools pass `--mode plan`, but plan mode is
-  advisory with the permission bypass on or off. Verified against agy 1.2.1 and again against 1.2.2:
-  a plan-mode run creates files.
-- **So the bridge watches instead of promising.** It fingerprints the working tree around every
-  plan-mode run and adds a `READ-ONLY VIOLATION` warning to the header when the tree changed. Absence
-  of the warning means it looked and found nothing; a run it could not fingerprint says nothing at all
-  rather than claiming the tree is clean. Files git ignores are covered by size and mtime only,
+- **agy's plan mode is advisory.** Read-only tools pass `--mode plan`, but verified against agy 1.2.1
+  and again against 1.2.2: a plan-mode run creates files, with the permission bypass on or off.
+- **So on macOS the bridge enforces read-only.** Plan-mode runs execute under `sandbox-exec` with every
+  write beneath the call's roots denied for agy and its child processes; the header says
+  `read-only: enforced`. Where the sandbox cannot run (Linux, or a sandboxed bridge) the header says
+  `read-only: watched, not enforced`, and `AGY_READ_ONLY_ENFORCEMENT=require` refuses the run instead.
+  The block covers only the roots: agy can still write elsewhere, and a process it launches through
+  an app or launchd escapes it.
+- **The bridge watches in both modes.** It fingerprints the working tree around every plan-mode run
+  and warns `READ-ONLY VIOLATION` or, under enforcement, `WORKING TREE CHANGED` when the tree moved.
+  Absence of a warning means it looked and found nothing; a run it could not fingerprint says nothing
+  at all rather than claiming the tree is clean. Files git ignores are covered by size and mtime only,
   dependency and build trees such as `node_modules` as one entry, and any other writer during the
   run moves it too.
 - **A write run that may have taken effect is never repeated for you.** After a network error or a
@@ -186,8 +193,8 @@ What that means in practice, and what the bridge does about it:
   under the bypass and can reach anything the user running it can. It is also a server-level
   environment variable in the MCP registration, not a per-call argument.
 
-**There is no containment boundary you can rely on from here.** Treat a dispatch as running with your
-own shell access. If a task genuinely must not touch the rest of the disk, say so and have the human
+**The only containment is the read-only block on a macOS plan-mode run's own roots.** A `write: true`
+dispatch is not sandboxed at all. Treat a dispatch as running with your own shell access. If a task genuinely must not touch the rest of the disk, say so and have the human
 arrange isolation outside the bridge - a container, a throwaway checkout, or a restricted account.
 
 ## Authorization model

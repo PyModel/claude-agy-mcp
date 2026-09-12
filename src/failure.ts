@@ -50,7 +50,7 @@ const PATTERNS: [FailureKind, RegExp][] = [
   ["quota", QUOTA_RE],
   [
     "unauthenticated",
-    /unauthenticated|not logged in|please (re-?)?login|invalid credentials|PERMISSION_DENIED|UNAUTHENTICATED|\b(?:code|status|HTTP)[\s:=]*401\b|\b401 Unauthorized\b|\bauth\w*\s+(has\s+)?expired|\btoken\s+(has\s+)?expired|re-authenticate/i,
+    /unauthenticated|not logged in|authentication failed|please (re-?)?login|invalid credentials|PERMISSION_DENIED|UNAUTHENTICATED|\b(?:code|status|HTTP)[\s:=]*401\b|\b401 Unauthorized\b|\bauth\w*\s+(has\s+)?expired|\btoken\s+(has\s+)?expired|re-authenticate/i,
   ],
   [
     "network",

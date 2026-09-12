@@ -82,6 +82,11 @@ export interface Delegation {
    */
   wroteInReadOnlyMode?: boolean;
   /**
+   * How a plan-mode run was kept read-only; absent for a run allowed to write.
+   * `enforced` means agy and its children were denied writes inside every root.
+   */
+  readOnly?: ReadOnlyState;
+  /**
    * Whether a continuation actually continued.
    *
    * agy answers `--conversation <id>` for an id it cannot find from a brand-new
@@ -161,11 +166,32 @@ export class NotRepeatedError extends Error {
   }
 }
 
+export interface ReadOnlyState {
+  enforced: boolean;
+  /** Why the run was only watched, when it was not enforced. */
+  reason?: string;
+}
+
+/**
+ * The tree moved although agy was denied writes into it. That is not agy
+ * ignoring plan mode: something outside its sandbox changed the tree.
+ */
+export const READ_ONLY_TREE_MOVED =
+  "WORKING TREE CHANGED — this call ran in plan mode with writes into its roots blocked for agy " +
+  "and every process it started, yet the tree changed while it ran. Another process changed it, " +
+  "or agy reached it through a process started outside its sandbox, such as an app or a launchd " +
+  "job. Inspect the tree before trusting it.";
+
 /** The one wording of the read-only warning, for headers and for errors alike. */
 export const READ_ONLY_VIOLATION =
   "READ-ONLY VIOLATION — this call ran in plan mode, and the working tree changed while it ran. " +
-  "agy does not enforce plan mode, with the permission bypass on or off, so " +
-  "treat the run as having had write access: inspect the tree before trusting it.";
+  "agy does not enforce plan mode, with the permission bypass on or off, and this run could not " +
+  "be confined, so treat it as having had write access: inspect the tree before trusting it.";
+
+/** The warning for a plan run whose tree moved, worded for how it was kept read-only. */
+export function treeMovedWarning(state: ReadOnlyState | undefined): string {
+  return state?.enforced ? READ_ONLY_TREE_MOVED : READ_ONLY_VIOLATION;
+}
 
 export class DelegationDepthError extends Error {
   constructor(depth: number, max: number) {
@@ -225,7 +251,10 @@ export class Delegator {
     depth: number;
     preference: ModelPreference | null;
     askModel: boolean;
+    readOnly: { policy: Config["readOnlyEnforcement"]; enforced: boolean; reason?: string };
   } {
+    const confinement = this.deps.confinement;
+    const enforced = this.cfg.readOnlyEnforcement !== "off" && confinement?.available === true;
     return {
       preference: this.prefs.load(),
       askModel: this.cfg.askModel,
@@ -239,6 +268,18 @@ export class Delegator {
       queued: this.admission.queued,
       warm: this.warm.stats(),
       depth: this.depth,
+      readOnly: {
+        policy: this.cfg.readOnlyEnforcement,
+        enforced,
+        ...(enforced
+          ? {}
+          : {
+              reason:
+                this.cfg.readOnlyEnforcement === "off"
+                  ? "AGY_READ_ONLY_ENFORCEMENT is off"
+                  : (confinement?.reason ?? "write confinement was not set up"),
+            }),
+      },
     };
   }
 
@@ -349,6 +390,27 @@ export class Delegator {
    * Whatever this returns is containment-checked by `assertMayDelegate`, so a
    * derived root can never widen the caller's reach.
    */
+  /**
+   * How this call is kept read-only, or undefined for a call allowed to write.
+   * Confinement follows the configured policy and what the machine supports.
+   */
+  private readOnlyFor(req: DelegationRequest): ReadOnlyState | undefined {
+    if (modeFor(req.tool, req.write) !== "plan") return undefined;
+    if (this.cfg.readOnlyEnforcement === "off") {
+      return { enforced: false, reason: "AGY_READ_ONLY_ENFORCEMENT is off" };
+    }
+    const confinement = this.deps.confinement;
+    if (!confinement?.available) {
+      return { enforced: false, reason: confinement?.reason ?? "write confinement was not set up" };
+    }
+    return { enforced: true };
+  }
+
+  /** The roots a read-only run is confined against, when it is confined at all. */
+  private confineFor(req: DelegationRequest): string[] | undefined {
+    return this.readOnlyFor(req)?.enforced ? [req.cwd, ...this.dirsFor(req)] : undefined;
+  }
+
   private dirsFor(req: DelegationRequest): string[] {
     return [...new Set([...(req.dirs ?? []), ...req.tool.extraDirs(req.args, req.cwd)])];
   }
@@ -364,8 +426,8 @@ export class Delegator {
       throw new ModelNotChosenError(await this.defaultChoice(), await this.models.available());
     }
     const route = await this.routeFor(req, pref);
-    // agy cannot be *made* to honour plan mode while permissions are skipped, so
-    // the bridge watches instead of promising. Only plan-mode runs are watched:
+    // agy does not honour plan mode, so where it can the bridge confines the
+    // run (see readOnlyFor) and it watches in every case. Only plan-mode runs are watched:
     // a write run changing the tree is the point of it. Both fingerprints are
     // taken inside the admission gate, so this filesystem work is bounded by
     // AGY_MAX_CONCURRENCY like everything else and cannot stampede a big tree.
@@ -374,6 +436,14 @@ export class Delegator {
     // `dirs` entry is just as much a write. The same fingerprint decides whether
     // a failed run may be repeated, so it is taken for write runs too.
     const plan = modeFor(req.tool, req.write) === "plan";
+    const readOnly = this.readOnlyFor(req);
+    if (readOnly && !readOnly.enforced && this.cfg.readOnlyEnforcement === "require") {
+      throw new AgyFailure(
+        "agy_error",
+        `Refusing a read-only run that cannot be confined (${readOnly.reason}). ` +
+          `AGY_READ_ONLY_ENFORCEMENT=require forbids falling back to watching the tree.`,
+      );
+    }
     const roots = [req.cwd, ...this.dirsFor(req)];
     const snap = this.deps.snapshot ?? snapshotTree;
     const fingerprint = async () => combineSnapshots(await Promise.all(roots.map((r) => snap(r))));
@@ -400,13 +470,14 @@ export class Delegator {
           // A plan run that wrote and then failed still wrote; the failure must
           // not swallow the evidence.
           if (plan && err instanceof Error && treeChanged(before, await fingerprint())) {
-            err.message = `${err.message}\n\n${READ_ONLY_VIOLATION}`;
+            err.message = `${err.message}\n\n${treeMovedWarning(readOnly)}`;
           }
           throw err;
         }
         if (!plan) return result;
         const wrote = treeChanged(before, await fingerprint());
-        return wrote === undefined ? result : { ...result, wroteInReadOnlyMode: wrote };
+        const watched = readOnly ? { ...result, readOnly } : result;
+        return wrote === undefined ? watched : { ...watched, wroteInReadOnlyMode: wrote };
       },
       req.signal,
     );
@@ -535,8 +606,10 @@ export class Delegator {
     if (this.warmEligible(req)) {
       const conversationId = req.conversationId!;
       try {
+        const confineTo = this.confineFor(req);
         const envelope = await this.warm.turn(conversationId, req.cwd, prompt, {
           timeoutMs: req.timeoutSec * 1000,
+          ...(confineTo ? { confineTo } : {}),
           ...(req.signal ? { signal: req.signal } : {}),
           ...(req.onProgress
             ? {
@@ -668,11 +741,13 @@ export class Delegator {
           ...(req.signal ? { signal: req.signal } : {}),
           env: this.childEnv(),
           ...(req.onProgress ? { onProgress: req.onProgress } : {}),
+          ...(this.confineFor(req) ? { confineTo: this.confineFor(req) } : {}),
         },
         this.cfg,
         this.caps,
         {
           spawn: this.deps.spawn,
+          confinement: this.deps.confinement,
           timing: this.deps.timing,
           track: (proc) => {
             this.live.add(proc);
