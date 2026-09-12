@@ -15,7 +15,7 @@
 
 <p>
   <a href="#install"><b>Install</b></a> ·
-  <a href="#why-gemini-37-flash-high-for-claude-code"><b>Why Gemini 3.7 Flash?</b></a> ·
+  <a href="#why-gemini-flash-for-claude-code"><b>Why Gemini 3.8 Flash?</b></a> ·
   <a href="#the-ultimate-ai-engineering-mcp-stack"><b>MCP Power Stack</b></a> ·
   <a href="#tools"><b>Tools</b></a> ·
   <a href="#timeouts-and-cancellation"><b>Timeouts</b></a> ·
@@ -40,31 +40,30 @@ Claude acts as the orchestrator → `claude-agy-mcp` routes compute-heavy sub-ta
 </div>
 
 ```
-User → Claude Code → claude-agy-mcp (MCP) → agy CLI → Gemini 3.7 Flash / Pro / Claude
+User → Claude Code → claude-agy-mcp (MCP) → agy CLI → Gemini 3.8 Flash / Pro / Claude
                    ←                      ←         ← (Clean answers only)
 ```
 
 ## Why Gemini Flash for Claude Code?
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/PyModel/claude-agy-mcp/main/assets/benchmarks.svg" alt="Gemini 3.7 Flash Benchmarks" width="100%">
+  <img src="https://raw.githubusercontent.com/PyModel/claude-agy-mcp/main/assets/benchmarks.svg" alt="Gemini 3.8 Flash Benchmarks" width="100%">
 </div>
 
 **Gemini Flash** is Google's most intelligent workhorse model for coding and agentic execution. It applies deep multi-step planning, rigorous terminal reasoning, and high first-pass code accuracy.
 
-> **Gemini 3.8 Flash (High) is the default model for every tool.** Each chain leads with `gemini-flash@latest-high`, which resolves against `agy models` to the newest Flash at High effort — 3.8 Flash as of 2026-09-11 — and only falls back to Pro or Claude when Flash is unavailable or cooling down. The benchmark table below compares the generation that was current when it was written (3.7 Flash against 3.6 Flash); the bridge does not pin that generation.
+> **Gemini 3.8 Flash (High) is the default model for every tool.** Each chain leads with `gemini-flash@latest-high`, which resolves against `agy models` to the newest Flash at High effort — 3.8 Flash as of 2026-09-11 — and only falls back to Pro or Claude when Flash is unavailable or cooling down. The benchmark table below compares 3.8 Flash against 3.7 Flash, from [Google's launch table](https://blog.google/innovation-and-ai/models-and-research/gemini-models/3-8-flash-and-3-8-flash-cyber) (2026-09-02); the bridge does not pin that generation.
 
 ### Benchmark Highlights
 
-| Benchmark / Capability | Gemini 3.7 Flash (High) | Prior Generation (3.6 Flash) | Advantage                                                                                 |
-| ---------------------- | ----------------------- | ---------------------------- | ----------------------------------------------------------------------------------------- |
-| **DeepSWE v1.1**       | **65.3%**               | 49.0%                        | **+16.3%** jump in long-horizon repository software engineering                           |
-| **FrontierCode 1.1**   | **43.6%**               | 34.4%                        | **+9.2%** improvement in production code quality and first-pass accuracy                  |
-| **Terminal-Bench 2.1** | **85.8%**               | 78.0%                        | **+7.8%** higher resilience in agentic CLI execution & tool chaining                      |
-| **WebDev Arena**       | **1588 Elo**            | 1538 Elo                     | **#1 Rank** for fullstack web application and UI design adherence                         |
-| **AutomationBench**    | **30.4%**               | 17.0%                        | Surpasses GPT-5.6 Terra (23.6%) and Claude Sonnet 5 (10.7%) in enterprise agent workflows |
-| **Context & Window**   | **1,000,000 Tokens**    | 1,000,000 Tokens             | 64K output tokens with 97.0% retrieval on GDM-MRCR v2 (128k)                              |
-| **Token Economics**    | **$0.75 / $3.75** (1M)  | $1.50 / $7.50                | Up to **10x–20x cheaper** than Claude Opus/Sonnet for background delegation               |
+| Benchmark / Capability    | Gemini 3.8 Flash (High) | Prior Generation (3.7 Flash) | Advantage                                                                      |
+| ------------------------- | ----------------------- | ---------------------------- | ------------------------------------------------------------------------------ |
+| **DeepSWE v1.1**          | **73.7%**               | 65.3%                        | **+8.4 pts** in long-horizon software engineering; within 0.3 of Claude Opus 5 |
+| **Terminal-Bench 2.1**    | **89.4%**               | 85.8%                        | **+3.6 pts** in agentic CLI execution; ahead of Opus 5 (89.1%) and GPT-5.6 Sol |
+| **OSWorld-2.0**           | **59.0%**               | 50.6%                        | **+8.4 pts** in agentic computer use                                           |
+| **HLE-Verified**          | **54.9%**               | 53.6%                        | Multi-step expert reasoning, ahead of Opus 5 (54.4%)                           |
+| **Vals Finance Agent v2** | **61.4%**               | 59.0%                        | Leads Opus 5 (58.6%) and GPT-5.6 Sol (53.8%) on quantitative agent work        |
+| **Token Economics**       | **$0.75 / $3.75** (1M)  | $0.75 / $3.75                | Same price as 3.7 Flash; up to **10x–20x cheaper** than Claude Opus/Sonnet     |
 
 ### The Token & Context Multiplier
 
@@ -73,7 +72,7 @@ When Claude Code directly analyzes a 4,000-line database dump or greps 20 files 
 With `claude-agy-mcp`:
 
 1. Claude calls `analyze_files` or `deep_search`.
-2. Gemini 3.7 Flash processes the 100k+ tokens in isolation via `agy`.
+2. Gemini 3.8 Flash processes the 100k+ tokens in isolation via `agy`.
 3. Only the exact code-level findings and line citations return into Claude's prompt.
 4. Subsequent questions reuse the same agy session with `follow_up` without re-sending any files.
 
@@ -91,14 +90,14 @@ With `claude-agy-mcp`:
        ▼                      ▼                       ▼                       ▼
 ┌──────────────┐      ┌──────────────┐        ┌──────────────┐        ┌──────────────┐
 │claude-agy-mcp│      │   context7   │        │  firecrawl   │        │    tavily    │
-│  (Gemini 3.7 │      │(Official Docs│        │(Web Scraping │        │(Live Search  │
+│  (Gemini 3.8 │      │(Official Docs│        │(Web Scraping │        │(Live Search  │
 │  Delegation) │      │  & API Specs)│        │  & Crawling) │        │ & Research)  │
 └──────────────┘      └──────────────┘        └──────────────┘        └──────────────┘
 ```
 
 | MCP Server           | Primary Superpower                    | When Claude Uses It                                                                                                                                            |
 | -------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`claude-agy-mcp`** | **Heavy Compute & Coding Delegation** | Analyzing files >200 lines, repo archaeology (`git log/diff/blame`), adversarial code reviews, and raw execution via Gemini 3.7 Flash.                         |
+| **`claude-agy-mcp`** | **Heavy Compute & Coding Delegation** | Analyzing files >200 lines, repo archaeology (`git log/diff/blame`), adversarial code reviews, and raw execution via Gemini 3.8 Flash.                         |
 | **`context7`**       | **Up-to-date Official Documentation** | Fetching latest version-accurate API signatures and documentation for libraries (Next.js, React, Tailwind, Prisma, Vite, etc.) to eliminate hallucinated APIs. |
 | **`firecrawl`**      | **Clean Web Scraping & Crawling**     | Converting dynamic web pages, documentation sites, and GitHub repos into clean, LLM-ready markdown or structured JSON.                                         |
 | **`tavily`**         | **Fast Live Search & Grounding**      | Low-latency web search, current news, error message lookups, and technical research.                                                                           |
