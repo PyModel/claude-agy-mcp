@@ -1,4 +1,5 @@
 import path from "node:path";
+import { TOOLS_BY_NAME } from "./tools.js";
 
 export interface Config {
   agyPath: string;
@@ -65,13 +66,35 @@ function unset(raw: string | undefined): boolean {
   return raw === undefined || raw === "";
 }
 
-function positiveInt(name: string, raw: string | undefined, fallback: number): number {
+/**
+ * The longest runtime any timer here may be given. Node clamps a delay above
+ * 2^31-1 ms (about 24.8 days) to 1 ms, so an over-large timeout did not mean
+ * "effectively forever": it killed every run the instant it started.
+ */
+export const MAX_DURATION_SEC = 7 * 24 * 3600;
+
+/** Plain decimal digits only: `Number()` also accepts "1e3", "0x10" and " 5 ". */
+const DECIMAL = /^[0-9]+$/;
+
+function positiveInt(
+  name: string,
+  raw: string | undefined,
+  fallback: number,
+  max = Number.MAX_SAFE_INTEGER,
+): number {
   if (unset(raw)) return fallback;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n <= 0) {
+  const n = DECIMAL.test(raw as string) ? Number(raw) : NaN;
+  if (!Number.isSafeInteger(n) || n <= 0) {
     throw new ConfigError(name, raw as string, "a positive integer");
   }
+  if (n > max)
+    throw new ConfigError(name, raw as string, `a positive integer no larger than ${max}`);
   return n;
+}
+
+/** A duration in seconds that every timer in the bridge can actually honour. */
+function durationSec(name: string, raw: string | undefined, fallback: number): number {
+  return positiveInt(name, raw, fallback, MAX_DURATION_SEC);
 }
 
 function optionalPositiveInt(name: string, raw: string | undefined): number | undefined {
@@ -90,10 +113,17 @@ function bool(name: string, raw: string | undefined, fallback: boolean): boolean
   throw new ConfigError(name, raw as string, "one of true/false/1/0/yes/no/on/off");
 }
 
+/** Enum settings are read the way booleans are: trimmed and case-insensitive. */
+function oneOf<T extends string>(name: string, raw: string, allowed: readonly T[]): T {
+  const v = raw.trim().toLowerCase();
+  const hit = allowed.find((a) => a === v);
+  if (hit === undefined) throw new ConfigError(name, raw, `one of ${allowed.join("/")}`);
+  return hit;
+}
+
 function effort(raw: string | undefined): "low" | "medium" | "high" | undefined {
   if (unset(raw)) return undefined;
-  if (raw === "low" || raw === "medium" || raw === "high") return raw;
-  throw new ConfigError("AGY_EFFORT", raw as string, "one of low/medium/high");
+  return oneOf("AGY_EFFORT", raw as string, ["low", "medium", "high"] as const);
 }
 
 /**
@@ -110,10 +140,14 @@ export function parseRoots(raw: string | undefined, delimiter: string = path.del
 
 function onFailure(raw: string | undefined): "strict" | "fallback" {
   if (unset(raw)) return "fallback";
-  if (raw === "strict" || raw === "fallback") return raw;
-  throw new ConfigError("AGY_ON_FAILURE", raw as string, "one of strict/fallback");
+  return oneOf("AGY_ON_FAILURE", raw as string, ["strict", "fallback"] as const);
 }
 
+/**
+ * A per-tool override must name a real tool. `AGY_TIMEOUT_DEEPSEARCH` used to be
+ * accepted and silently never applied, so the operator believed a limit was in
+ * force that was not.
+ */
 function loadPerToolTimeouts(env: Record<string, string | undefined>): Record<string, number> {
   const out: Record<string, number> = {};
   for (const [key, raw] of Object.entries(env)) {
@@ -121,7 +155,14 @@ function loadPerToolTimeouts(env: Record<string, string | undefined>): Record<st
     const tool = key.slice("AGY_TIMEOUT_".length).toLowerCase();
     if (!tool) continue;
     if (unset(raw)) continue;
-    out[tool] = positiveInt(key, raw, 0);
+    if (!TOOLS_BY_NAME.has(tool)) {
+      throw new ConfigError(
+        key,
+        raw as string,
+        `AGY_TIMEOUT_<TOOL> for a tool this server has (${[...TOOLS_BY_NAME.keys()].join(", ")})`,
+      );
+    }
+    out[tool] = durationSec(key, raw, 0);
   }
   return out;
 }
@@ -131,19 +172,28 @@ export function timeoutFor(cfg: Config, toolName: string): number {
   return cfg.perToolTimeouts[toolName] ?? cfg.defaultTimeoutSec;
 }
 
-/** The depth this server is running at, read from the env agy's parent set. */
+/**
+ * The depth this server is running at, read from the env agy's parent set.
+ *
+ * Unset means top level. Anything else must parse: reading garbage as zero
+ * switched the recursion guard off, which is the one direction it must not fail.
+ */
 export function delegationDepth(env: Record<string, string | undefined> = process.env): number {
-  const n = Number(env.AGY_DELEGATION_DEPTH);
-  return Number.isInteger(n) && n >= 0 ? n : 0;
+  const raw = env.AGY_DELEGATION_DEPTH;
+  if (unset(raw)) return 0;
+  if (!DECIMAL.test(raw as string)) {
+    throw new ConfigError("AGY_DELEGATION_DEPTH", raw as string, "a non-negative integer");
+  }
+  return Number(raw);
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
   return {
     agyPath: env.AGY_PATH || "agy",
-    defaultTimeoutSec: positiveInt(
+    defaultTimeoutSec: durationSec(
       "AGY_TIMEOUT",
       env.AGY_TIMEOUT,
-      positiveInt("AGY_MAX_RUNTIME", env.AGY_MAX_RUNTIME, 3600),
+      durationSec("AGY_MAX_RUNTIME", env.AGY_MAX_RUNTIME, 3600),
     ),
     perToolTimeouts: loadPerToolTimeouts(env),
     maxOutputChars: positiveInt("AGY_MAX_OUTPUT_CHARS", env.AGY_MAX_OUTPUT_CHARS, 50_000),
@@ -160,6 +210,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     maxDelegationDepth: positiveInt("AGY_MAX_DELEGATION_DEPTH", env.AGY_MAX_DELEGATION_DEPTH, 1),
     warmSessions: bool("AGY_WARM_SESSIONS", env.AGY_WARM_SESSIONS, true),
     warmMax: positiveInt("AGY_WARM_MAX", env.AGY_WARM_MAX, 2),
-    warmIdleSec: positiveInt("AGY_WARM_IDLE_SEC", env.AGY_WARM_IDLE_SEC, 300),
+    warmIdleSec: durationSec("AGY_WARM_IDLE_SEC", env.AGY_WARM_IDLE_SEC, 300),
   };
 }

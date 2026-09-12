@@ -10,21 +10,38 @@ export function resolveFiles(files: string[], cwd: string): string[] {
   return files.map((f) => (path.isAbsolute(f) ? f : path.resolve(cwd, f)));
 }
 
+/** Most legs one `delegate_many` call may start; each is a full model run on shared quota. */
+export const MAX_FANOUT = 8;
+
+/**
+ * Text a model run is spent on. Whitespace alone used to pass, and bought an
+ * "empty response" error or a junk answer for the price of a full run.
+ */
+const text = () => z.string().regex(/\S/, "must not be empty or whitespace");
+
+/**
+ * A value agy receives as a flag's argument. A leading dash could be read as a
+ * flag of its own, and surrounding whitespace made a different id that still
+ * looked right in a transcript.
+ */
+const flagValue = () => z.string().trim().min(1).max(512).regex(/^[^-]/, "must not start with '-'");
+
+const paths = () => z.array(z.string().min(1)).max(256);
+
 const commonShape = {
   cwd: z
     .string()
+    .min(1)
     .optional()
     .describe(
       "Absolute path to the working directory / project root. Defaults to the server's cwd.",
     ),
-  dirs: z
-    .array(z.string())
+  dirs: paths()
     .optional()
     .describe(
       "Extra directories to add to agy's workspace, for cross-repo or worktree-vs-base analysis.",
     ),
-  model: z
-    .string()
+  model: flagValue()
     .optional()
     .describe(
       'Override the model. Accepts a display name ("Gemini 3.8 Flash (High)"), an id ' +
@@ -68,7 +85,7 @@ const structuredShape = {
 export const ROUTING_ARGS = z.object({
   ...commonShape,
   ...structuredShape,
-  session_id: z.string().optional(),
+  session_id: flagValue().optional(),
   write: z.boolean().optional(),
   sandbox: z.boolean().optional(),
 });
@@ -145,11 +162,8 @@ export const TOOLS: ToolDef[] = [
       "logs, database dumps, generated code, cross-file reviews, comparisons. " +
       "The files never enter your context — only the answer does.",
     schema: z.object({
-      files: z
-        .array(z.string())
-        .min(1)
-        .describe("File paths to analyze (relative to cwd or absolute)."),
-      question: z.string().describe("What you want to know about these files."),
+      files: paths().min(1).describe("File paths to analyze (relative to cwd or absolute)."),
+      question: text().describe("What you want to know about these files."),
       ...commonShape,
       ...structuredShape,
     }),
@@ -171,9 +185,9 @@ export const TOOLS: ToolDef[] = [
       "wide greps across a repo, 'when/why did X change', 'where is Y used'. " +
       "USE THIS instead of running many search commands yourself — it saves your context.",
     schema: z.object({
-      query: z
-        .string()
-        .describe("What to find, e.g. 'when was the auth middleware refactored and why'."),
+      query: text().describe(
+        "What to find, e.g. 'when was the auth middleware refactored and why'.",
+      ),
       ...commonShape,
       ...structuredShape,
     }),
@@ -194,7 +208,7 @@ export const TOOLS: ToolDef[] = [
       "library docs, API references, error messages, current versions, external knowledge. " +
       "USE THIS when you need information you don't have or that may be newer than your training data.",
     schema: z.object({
-      query: z.string().describe("What to look up on the web."),
+      query: text().describe("What to look up on the web."),
       ...commonShape,
       ...structuredShape,
     }),
@@ -218,10 +232,7 @@ export const TOOLS: ToolDef[] = [
           .string()
           .optional()
           .describe("Inline content to review (plan, diff, code snippet)."),
-        files: z
-          .array(z.string())
-          .optional()
-          .describe("File paths to review instead of inline content."),
+        files: paths().optional().describe("File paths to review instead of inline content."),
         focus: z
           .string()
           .optional()
@@ -229,7 +240,7 @@ export const TOOLS: ToolDef[] = [
         ...commonShape,
         ...structuredShape,
       })
-      .refine((a) => Boolean(a.content) || Boolean(a.files?.length), {
+      .refine((a) => Boolean(a.content?.trim()) || Boolean(a.files?.length), {
         message: "adversarial_review requires either `content` or `files`.",
       }),
     chain: ["gemini-flash@latest-high", "gemini-pro@latest-high", "claude-opus@latest"],
@@ -259,8 +270,10 @@ export const TOOLS: ToolDef[] = [
       "opinion on the same history from a different model without re-sending it. " +
       "Read-only by default; pass `write: true` to rework a delegation that edited files.",
     schema: z.object({
-      session_id: z.string().describe("The session id returned by a previous claude-agy-mcp call."),
-      question: z.string().describe("The follow-up question."),
+      session_id: flagValue().describe(
+        "The session id returned by a previous claude-agy-mcp call.",
+      ),
+      question: text().describe("The follow-up question."),
       write: z
         .boolean()
         .optional()
@@ -283,7 +296,7 @@ export const TOOLS: ToolDef[] = [
       "Read-only by default; pass `write: true` to let agy edit files, `sandbox: true` to " +
       "confine it. Anything it was refused comes back as a denied-actions note.",
     schema: z.object({
-      prompt: z.string().describe("The complete task prompt for agy."),
+      prompt: text().describe("The complete task prompt for agy."),
       write: z
         .boolean()
         .optional()
@@ -306,22 +319,31 @@ export const TOOLS: ToolDef[] = [
       "everything else, so it queues rather than stampedes the shared quota.",
     schema: z
       .object({
-        prompt: z.string().optional().describe("One prompt to send to every model in `models`."),
+        prompt: text().optional().describe("One prompt to send to every model in `models`."),
         tasks: z
-          .array(z.string())
+          .array(text())
+          .min(1)
+          .max(MAX_FANOUT)
           .optional()
-          .describe("Several prompts to run, each as its own delegation."),
+          .describe(`Several prompts to run, each as its own delegation (at most ${MAX_FANOUT}).`),
         models: z
-          .array(z.string())
+          .array(flagValue())
+          .min(1)
+          .max(MAX_FANOUT)
+          .refine((m) => new Set(m).size === m.length, "must not list a model twice")
           .optional()
           .describe(
-            "Models to ask. Defaults to a Flash/Pro/Opus council when `prompt` is used, " +
-              "and to the automatic route when `tasks` is used.",
+            `Models to ask with \`prompt\` (at most ${MAX_FANOUT}). Defaults to a ` +
+              "Flash/Pro/Opus council.",
           ),
         ...commonShape,
       })
-      .refine((a) => Boolean(a.prompt) || Boolean(a.tasks?.length), {
-        message: "delegate_many requires either `prompt` or `tasks`.",
+      .refine((a) => Boolean(a.prompt) !== Boolean(a.tasks), {
+        message: "delegate_many requires exactly one of `prompt` or `tasks`.",
+      })
+      .refine((a) => !(a.tasks && a.models), {
+        message:
+          "delegate_many runs `tasks` on the automatic route; pass `models` only with `prompt`.",
       }),
     chain: ["gemini-flash@latest-high", "gemini-pro@latest-high", "claude-opus@latest"],
     privilege: "read-only",

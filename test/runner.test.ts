@@ -306,7 +306,9 @@ describe("runAgy", () => {
     const e = new Error("spawn agy ENOENT") as NodeJS.ErrnoException;
     e.code = "ENOENT";
     const agy = fakeAgy({ spawnError: e, exitCode: null });
-    await expect(run({ prompt: "q", cwd: "/repo", timeoutSec: 600 }, agy)).rejects.toThrow(
+    // A real directory: Node reports a missing cwd with the same ENOENT, and
+    // that case is diagnosed as the directory, not the install.
+    await expect(run({ prompt: "q", cwd: process.cwd(), timeoutSec: 600 }, agy)).rejects.toThrow(
       /not found.*antigravity/is,
     );
   });

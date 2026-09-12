@@ -29,6 +29,9 @@ permission bypass is on, which is the default, so the bridge fingerprints the wo
 tree around every plan-mode run. A `READ-ONLY VIOLATION` line in the header means the
 run wrote despite being asked not to — inspect the tree before trusting the answer.
 
+**A `Not retried` or `Not failed over` error means the run may already have taken effect.**
+The bridge refuses to repeat a run whose tree moved. Inspect the tree before calling again.
+
 **Re-verify before you act on a delegation that edited files.** Read the diff with
 `git status --porcelain` and `git diff`, and re-run the project's own gates. The
 implementer's report of what it did is a claim like any other.

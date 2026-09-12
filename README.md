@@ -258,7 +258,9 @@ agy never surfaces quota exhaustion in print mode — it silently retries the 42
 1. kills the agy process group immediately (no waiting out the timeout),
 2. parses the reset time ("Resets in 4h24m") into an in-process cooldown registry,
 3. retries the same prompt on the next model in the tool's chain,
-4. skips cooled-down models on all subsequent calls until their quota resets.
+4. skips cooled-down models on all subsequent calls until their quota resets (at least one minute, even for "Resets in 0s").
+
+A model you pin with `model` is tried even while it is cooling down. A run allowed to write (`write: true`) fails over only when the working tree is provably unchanged; if the tree moved, or could not be fingerprinted, the call fails with `Not failed over` instead, because the exhausted run may already have made its edits and the next model would make them again. The same rule governs the single retry after a network error, and a resident session that returned an empty answer.
 
 Failovers are annotated in the response footer (`failover: <model>: quota exhausted (resets in 4h24m)`). Only when every candidate is exhausted does the call fail — in seconds, with reset times listed — instead of hanging.
 
@@ -266,11 +268,11 @@ Failovers are annotated in the response footer (`failover: <model>: quota exhaus
 
 **The bridge does not kill a run for being slow.** Elapsed time cannot distinguish a healthy long model call from a wedged process, and a wrong "stuck" verdict interrupts an agent mid-edit — leaving half-written files behind. So a run is killed only when something authoritative says so:
 
-1. **the caller cancels** (e.g. pressing Esc in Claude Code) — the agy run dies instead of being orphaned,
+1. **the caller cancels** (e.g. pressing Esc in Claude Code), **the client disconnects**, or **the bridge is stopped** — every agy run it started dies with it instead of being orphaned,
 2. **quota is confirmed exhausted** (a 429 in the run's log), which triggers failover, or
 3. **the resource ceiling expires** — `AGY_MAX_RUNTIME`, default 3600s.
 
-The ceiling is a resource cap, not a diagnosis. When it fires, the run still returns everything agy produced so far plus its `session_id`, and says so explicitly: any file changes agy already made are on disk, and `follow_up` resumes from where it stopped. `AGY_TIMEOUT` overrides the ceiling for every tool; `AGY_TIMEOUT_<TOOL_NAME>` overrides it for one (e.g. `AGY_TIMEOUT_DEEP_SEARCH=900`) and wins over the global. The full set is `AGY_TIMEOUT_ANALYZE_FILES`, `AGY_TIMEOUT_DEEP_SEARCH`, `AGY_TIMEOUT_WEB_LOOKUP`, `AGY_TIMEOUT_ADVERSARIAL_REVIEW`, `AGY_TIMEOUT_FOLLOW_UP`, and `AGY_TIMEOUT_DELEGATE`. The kill path escalates SIGTERM → SIGKILL across the whole process group, and fires even if agy's helper processes hold the output pipes open.
+The ceiling is a resource cap, not a diagnosis. When it fires, the run still returns everything agy produced so far plus its `session_id`, and says so explicitly: any file changes agy already made are on disk, and `follow_up` resumes from where it stopped. `AGY_TIMEOUT` overrides the ceiling for every tool; `AGY_TIMEOUT_<TOOL_NAME>` overrides it for one (e.g. `AGY_TIMEOUT_DEEP_SEARCH=900`) and wins over the global. The full set is `AGY_TIMEOUT_ANALYZE_FILES`, `AGY_TIMEOUT_DEEP_SEARCH`, `AGY_TIMEOUT_WEB_LOOKUP`, `AGY_TIMEOUT_ADVERSARIAL_REVIEW`, `AGY_TIMEOUT_FOLLOW_UP`, `AGY_TIMEOUT_DELEGATE` and `AGY_TIMEOUT_DELEGATE_MANY`; any other `AGY_TIMEOUT_<NAME>` is a startup error, so a misspelt limit cannot silently not apply. Every timeout is at most 604800s (7 days), because Node fires a longer timer immediately. The kill path escalates SIGTERM → SIGKILL across the whole process group, and fires even if agy's helper processes hold the output pipes open.
 
 **Two timeout layers — and the client one usually bites first.** The ceiling above is the _agy-side_ budget. Your MCP client (Claude Code) has its own, separate _tool-call_ timeout, and if it is shorter, the client gives up first — you'll see `Error: timed out waiting for response`, while the bridge's own ceiling reads `MAXIMUM RUNTIME EXCEEDED` instead. Raising `AGY_MAX_RUNTIME` alone therefore changes nothing: the client still aborts on its own schedule. The work is not lost either way — the agy session persists, so `follow_up` with the returned `session_id` retrieves it — but the real fix is to make the client wait at least as long as the ceiling. The [Install](#install) command sets a per-server `timeout` of 3600000ms (scoped to this server only). If you registered the server without it, re-run the `add-json` command from Install, or set the global env var `MCP_TOOL_TIMEOUT=3600000`. Rule of thumb: **client `timeout` ≥ `AGY_MAX_RUNTIME`**.
 
@@ -292,6 +294,7 @@ All optional, via environment variables:
 | `AGY_EFFORT`               | agy's own default          | `low` \| `medium` \| `high` fallback tier; selects the sibling model at that tier (see Effort and tiers)                                                                      |
 | `AGY_SKIP_PERMISSIONS`     | `true`                     | Pass `--dangerously-skip-permissions` to agy                                                                                                                                  |
 | _(all boolean vars)_       | —                          | Accept `true/false`, `1/0`, `yes/no`, `on/off`, case-insensitive. An unrecognized value is a startup error, never a silent default                                            |
+| _(all numeric vars)_       | —                          | Plain decimal digits only (`1e3`, `0x10` and padded values are startup errors). Enum vars (`AGY_EFFORT`, `AGY_ON_FAILURE`) are case-insensitive                               |
 | `AGY_SANDBOX`              | `false`                    | Run agy with `--sandbox`                                                                                                                                                      |
 | `AGY_ON_FAILURE`           | `fallback`                 | `strict` appends an instruction to failed-tool errors telling the calling agent not to absorb the work itself                                                                 |
 | `AGY_MAX_CONCURRENCY`      | `2`                        | Most agy processes at once. Calls beyond it queue instead of stampeding the shared quota                                                                                      |
@@ -315,7 +318,13 @@ All optional, via environment variables:
 > Because it cannot be prevented, it is **detected**: the bridge fingerprints the working tree around
 > every plan-mode run and adds a `READ-ONLY VIOLATION` warning to the response header when the tree
 > changed. No warning means it looked and found nothing; a tree it could not fingerprint produces no
-> claim in either direction. That warning, not the tool's name and not the absence of a
+> claim in either direction. The fingerprint covers `cwd` and every directory the call hands agy. In
+> a git repository it covers HEAD, the content and mode of every tracked change, and the content of
+> every untracked file — but not files git ignores, so a write to a build output or `.env` is not
+> seen. Outside git it compares path, type, size, mode and mtime, bounded to 20,000 entries and 10s.
+> Anything else writing to the tree while the run is live (an editor, a watcher, a parallel write
+> delegation) also moves it: the warning means the tree changed during the run, not proof of who
+> changed it. A plan run that wrote and then failed carries the warning in its error. That warning, not the tool's name and not the absence of a
 > **denied-actions** note, is the signal to trust — denied actions only ever populate when the grant
 > is off.
 >
@@ -332,7 +341,7 @@ All optional, via environment variables:
 
 ### Failure behavior
 
-The bridge always fails loudly, and it decides what "failure" means from agy's JSON envelope rather than from its exit code. That matters because agy can exit 0 with `status: SUCCESS` and a plausible answer while having silently had its tool actions auto-denied — the bridge surfaces those as a denied-actions warning instead of passing off a half-worked answer as a clean one. Failures are classified: only a quota 429 fails over to the next model, while an invalid model or an expired login stops immediately instead of burning the whole chain. Degraded model routing is annotated in the response header. By default the calling agent (Claude) will typically do the work itself after a failure — visible in the transcript, but easy to stop noticing in a long session. Set `AGY_ON_FAILURE=strict` to append an explicit "do NOT perform this work yourself — report the failure to the user" instruction to every delegation error, so you keep control over when token savings are silently lost.
+The bridge always fails loudly, and it decides what "failure" means from agy's JSON envelope rather than from its exit code. That matters because agy can exit 0 with `status: SUCCESS` and a plausible answer while having silently had its tool actions auto-denied — the bridge surfaces those as a denied-actions warning instead of passing off a half-worked answer as a clean one. Failures are classified: only a quota 429 fails over to the next model, a network error is retried once, and an invalid model or an expired login stops immediately instead of burning the whole chain. A status code counts only beside a status word, so `read 429 bytes` in a log is not a quota error and `foo.ts:401` is not an auth failure. Tokens a failed attempt spent still count against `AGY_BUDGET_TOKENS`. Degraded model routing is annotated in the response header. By default the calling agent (Claude) will typically do the work itself after a failure — visible in the transcript, but easy to stop noticing in a long session. Set `AGY_ON_FAILURE=strict` to append an explicit "do NOT perform this work yourself — report the failure to the user" instruction to every delegation error, so you keep control over when token savings are silently lost. A call rejected before anything was delegated — a path outside the roots, a missing `cwd`, a prompt agy cannot receive — is the caller's to fix and carries no such instruction.
 
 ## Known limitations
 
@@ -342,10 +351,15 @@ Deliberately not addressed, so they are not mistaken for oversights:
   propagated to the child through an environment variable, so a nested launcher that
   scrubs the environment resets it to zero. The failure mode is wasted quota through a
   delegation loop, not a privilege escape.
-- **The run log is written at agy's umask and is not redacted.** `AGY_REDACT` scrubs
-  what returns to the caller; the temporary log agy writes for the quota poller can
-  hold secrets in cleartext until the run ends and it is removed. A crash can leave it
-  behind.
+- **The run log is not redacted.** `AGY_REDACT` scrubs what returns to the caller; the
+  temporary log agy writes for the quota poller can hold secrets in cleartext until the
+  run ends. It lives in a per-process directory only your user can read, is removed on
+  shutdown, and one left behind by a crash is removed the next time the bridge starts.
+- **Inputs are bounded.** A prompt is passed to agy as one command-line argument, so a
+  built prompt over 128 KiB (Linux's per-argument limit), or one containing a NUL byte,
+  is refused before anything runs; pass file paths rather than inlining large content.
+  `delegate_many` takes at most 8 tasks or 8 distinct models, and `tasks` cannot be
+  combined with `models`.
 - **`--disable-slash-commands` is best-effort.** Unlike `--mode plan` and `--sandbox`,
   it is dropped rather than refused when the installed agy does not advertise it, on
   the reasoning that a build without the flag most likely has no expansion to disable.

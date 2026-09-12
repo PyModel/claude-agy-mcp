@@ -80,6 +80,18 @@ export class Semaphore {
   }
 }
 
+/** A promise that rejects when `signal` aborts, and a way to stop listening. */
+function abortOf(signal: AbortSignal): { promise: Promise<never>; dispose(): void } {
+  let onAbort: () => void = () => {};
+  const promise = new Promise<never>((_, reject) => {
+    onAbort = () => reject(new AbortError());
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  });
+  promise.catch(() => {});
+  return { promise, dispose: () => signal.removeEventListener("abort", onAbort) };
+}
+
 /** One mutex per key, created on demand and dropped when nothing holds it. */
 export class KeyedMutex {
   private readonly chains = new Map<string, Promise<unknown>>();
@@ -88,17 +100,26 @@ export class KeyedMutex {
     return this.chains.size;
   }
 
-  async run<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  async run<T>(key: string, fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     const previous = this.chains.get(key) ?? Promise.resolve();
     // Swallow the predecessor's rejection: a failed run must not fail the next.
-    const mine = previous.catch(() => {}).then(fn);
+    // A caller cancelled while it waits leaves now, not when the holder finishes,
+    // which can be an hour; its place in the chain still settles in order.
+    const mine = previous
+      .catch(() => {})
+      .then(() => {
+        if (signal?.aborted) throw new AbortError();
+        return fn();
+      });
+    const cancelled = signal ? abortOf(signal) : undefined;
     this.chains.set(
       key,
       mine.catch(() => {}),
     );
     try {
-      return await mine;
+      return await (cancelled ? Promise.race([mine, cancelled.promise]) : mine);
     } finally {
+      cancelled?.dispose();
       // Only the last waiter clears the slot, so an in-flight chain is kept.
       if (this.chains.get(key) !== undefined) {
         const current = this.chains.get(key);
@@ -140,6 +161,6 @@ export class Admission {
     signal?: AbortSignal,
   ): Promise<T> {
     const guarded = () => this.semaphore.run(fn, signal);
-    return conversationId ? this.mutex.run(conversationId, guarded) : guarded();
+    return conversationId ? this.mutex.run(conversationId, guarded, signal) : guarded();
   }
 }

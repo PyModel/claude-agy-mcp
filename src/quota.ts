@@ -1,3 +1,5 @@
+import type { AgyUsage } from "./envelope.js";
+
 /**
  * Quota detection and cooldown tracking for agy model failover.
  *
@@ -10,6 +12,12 @@
 export const DEFAULT_COOLDOWN_SEC = 15 * 60;
 
 /**
+ * The shortest cooldown recorded. "Resets in 0s" is a reset racing the error,
+ * and a zero cooldown sent the very next call straight back into the same 429.
+ */
+export const MIN_COOLDOWN_SEC = 60;
+
+/**
  * The one place a 429 is recognised.
  *
  * It is deliberately broader than the exact string agy 1.2.x emits
@@ -17,9 +25,13 @@ export const DEFAULT_COOLDOWN_SEC = 15 * 60;
  * bridge learns about quota exhaustion, so a wording change upstream must not
  * silently switch cooldowns off. `failure.ts` classifies stderr with this same
  * pattern rather than a second, differently-worded copy of it.
+ *
+ * Broad, but never a bare number: a matched line kills a healthy run and cools
+ * the model machine-wide, and "read 429 bytes" or "handler.go:429" in a chatty
+ * log did exactly that. A 429 counts only with a status word beside it.
  */
 export const QUOTA_RE =
-  /RESOURCE_EXHAUSTED|\bcode 429\b|\b429\b|quota (?:exceeded|reached|exhausted)/i;
+  /RESOURCE_EXHAUSTED|ResourceExhausted|\b(?:code|status|HTTP)[\s:=]*429\b|\b429 Too Many Requests\b|quota (?:exceeded|reached|exhausted)/im;
 
 /**
  * Requires at least one component, so an unparseable duration reports itself as
@@ -67,6 +79,8 @@ export function detectQuota(log: string): QuotaInfo | null {
 export class QuotaError extends Error {
   readonly resetSeconds?: number;
   readonly resetText?: string;
+  /** Tokens the exhausted run still spent, when agy reported them. */
+  usage?: AgyUsage;
 
   constructor(
     readonly model: string | undefined,
@@ -117,7 +131,7 @@ export class CooldownRegistry {
   set(model: string, resetSeconds: number | undefined): void {
     const entries = this.live();
     const t = this.now();
-    entries[model] = t + (resetSeconds ?? DEFAULT_COOLDOWN_SEC) * 1000;
+    entries[model] = t + Math.max(resetSeconds ?? DEFAULT_COOLDOWN_SEC, MIN_COOLDOWN_SEC) * 1000;
     this.store.save(entries, t);
   }
 

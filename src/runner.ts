@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { rm } from "node:fs/promises";
+import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { rm, stat } from "node:fs/promises";
 import { StringDecoder } from "node:string_decoder";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -14,7 +15,7 @@ import {
   type AgyUsage,
   type DeniedAction,
 } from "./envelope.js";
-import { AgyFailure, classifyRun } from "./failure.js";
+import { AgyFailure, classifyRun, InvalidRequestError } from "./failure.js";
 import { LogTail } from "./logtail.js";
 import { detectQuota, QuotaError } from "./quota.js";
 
@@ -66,7 +67,10 @@ export interface RunResult {
 }
 
 export interface AgyProcess {
+  /** What agy printed, less any head dropped to stay under the output cap. */
   stdout(): string;
+  /** How many leading stdout chars were dropped to stay under the cap. */
+  stdoutDropped?(): number;
   stderr(): string;
   /** Settles when the process is fully done (exit + closed pipes, or spawn error). */
   wait(): Promise<{ code: number | null; error?: NodeJS.ErrnoException }>;
@@ -102,10 +106,41 @@ export interface RunTiming {
 export interface RunnerDeps {
   spawn?: SpawnAgy;
   timing?: RunTiming;
+  /**
+   * Told about every agy process this run starts; the returned function is
+   * called once the process is done. The owner uses it to kill runs still in
+   * flight when the bridge shuts down, since detached children outlive it.
+   */
+  track?: (proc: AgyProcess) => () => void;
 }
 
-const MAX_STDOUT_CHARS = 64 * 1024 * 1024;
+/** The most stdout kept per run. The envelope is printed last, so the head is what goes. */
+export const MAX_STDOUT_CHARS = 64 * 1024 * 1024;
 const MAX_STDERR_CHARS = 1024 * 1024;
+/** How much of the run log is kept for the final quota check; a 429 is one line. */
+const MAX_TRAILING_LOG_CHARS = 1024 * 1024;
+
+/**
+ * Appends `chunk`, keeping only the last `max` chars. Trims with slack so a
+ * stream past the cap does not copy the whole buffer on every chunk.
+ */
+export function appendTail(
+  buf: string,
+  chunk: string,
+  max: number,
+): { text: string; dropped: number } {
+  const next = buf + chunk;
+  if (next.length <= max + max / 4) return { text: next, dropped: 0 };
+  return { text: next.slice(next.length - max), dropped: next.length - max };
+}
+
+/**
+ * agy takes the prompt as a single argv entry. Linux caps one argument at
+ * 128 KiB (MAX_ARG_STRLEN) and macOS caps the whole argv near 1 MiB, and past
+ * either spawn fails with a bare E2BIG. The byte limit is the Linux one, so a
+ * call behaves the same on every platform.
+ */
+export const MAX_PROMPT_BYTES = 128 * 1024 - 1;
 
 const spawnDetached: SpawnAgy = (file, args, opts) => {
   const child = spawn(file, args, {
@@ -113,22 +148,30 @@ const spawnDetached: SpawnAgy = (file, args, opts) => {
     detached: true,
     ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
   });
+  // A child that dies before reading its stdin turns end() into EPIPE, and an
+  // unlistened 'error' on the pipe takes the whole bridge down with it.
+  child.stdin?.on("error", () => {});
   child.stdin?.end();
 
   let out = "";
+  let dropped = 0;
   let err = "";
   // A UTF-8 sequence can straddle two chunks; StringDecoder holds the partial
   // bytes instead of turning them into U+FFFD.
   const outDecoder = new StringDecoder("utf8");
   const errDecoder = new StringDecoder("utf8");
   child.stdout?.on("data", (d: Buffer) => {
-    if (out.length < MAX_STDOUT_CHARS) out += outDecoder.write(d);
+    const next = appendTail(out, outDecoder.write(d), MAX_STDOUT_CHARS);
+    out = next.text;
+    dropped += next.dropped;
   });
   child.stderr?.on("data", (d: Buffer) => {
     if (err.length < MAX_STDERR_CHARS) err += errDecoder.write(d);
   });
   const flush = () => {
-    out += outDecoder.end();
+    const next = appendTail(out, outDecoder.end(), MAX_STDOUT_CHARS);
+    out = next.text;
+    dropped += next.dropped;
     err += errDecoder.end();
   };
 
@@ -158,6 +201,7 @@ const spawnDetached: SpawnAgy = (file, args, opts) => {
 
   return {
     stdout: () => out,
+    stdoutDropped: () => dropped,
     stderr: () => err,
     wait: () => done,
     kill: (signal) => {
@@ -176,8 +220,55 @@ const spawnDetached: SpawnAgy = (file, args, opts) => {
   };
 };
 
+const LOG_DIR_PREFIX = "claude-agy-mcp-";
+let logDir: string | undefined;
+
+/**
+ * Run logs carry prompt text and model output, so they live in a directory only
+ * this user can read (mkdtemp creates it 0700), not loose in a shared tmpdir.
+ */
 function makeLogPath(): string {
-  return path.join(tmpdir(), `claude-agy-mcp-${process.pid}-${randomUUID()}.log`);
+  logDir ??= mkdtempSync(path.join(tmpdir(), `${LOG_DIR_PREFIX}${process.pid}-`));
+  return path.join(logDir, `${randomUUID()}.log`);
+}
+
+/** Removes this process's log directory; for shutdown, so it must be synchronous. */
+export function removeLogDir(): void {
+  if (logDir) rmSync(logDir, { recursive: true, force: true });
+  logDir = undefined;
+}
+
+/**
+ * Removes run logs left behind by bridges that died without cleaning up. Only
+ * entries this user owns whose recorded pid is no longer running are touched.
+ */
+export function sweepStaleLogs(dir: string = tmpdir()): void {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    const pid = new RegExp(`^${LOG_DIR_PREFIX}(\\d+)-`).exec(name)?.[1];
+    if (!pid || Number(pid) === process.pid || isRunning(Number(pid))) continue;
+    const full = path.join(dir, name);
+    try {
+      if (statSync(full).uid !== process.getuid?.()) continue;
+      rmSync(full, { recursive: true, force: true });
+    } catch {
+      // Gone already, or not ours to remove.
+    }
+  }
+}
+
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 /**
@@ -187,10 +278,64 @@ function makeLogPath(): string {
  */
 export function assertPromptIsNotFlagLike(prompt: string): void {
   if (/^\s*-/.test(prompt)) {
-    throw new Error(
+    throw new InvalidRequestError(
       "Prompt starts with '-', which agy's argument parser would read as a flag. " +
         "Rephrase it, or quote the leading dash.",
     );
+  }
+}
+
+/**
+ * Everything that makes a prompt impossible to hand to agy, checked before any
+ * process exists. The messages never quote the prompt: Node's own errors for a
+ * NUL byte echoed the whole argument back to the caller.
+ */
+export function assertPromptIsSendable(prompt: string): void {
+  assertPromptIsNotFlagLike(prompt);
+  if (prompt.includes("\0")) {
+    throw new InvalidRequestError(
+      "Prompt contains a NUL byte, which cannot be passed to agy as a command-line argument.",
+    );
+  }
+  const bytes = Buffer.byteLength(prompt, "utf8");
+  if (bytes > MAX_PROMPT_BYTES) {
+    throw new InvalidRequestError(
+      `Prompt is ${bytes} bytes; agy takes it as one command-line argument, limited to ` +
+        `${MAX_PROMPT_BYTES} bytes. Pass file paths instead of inlining the content.`,
+    );
+  }
+}
+
+/**
+ * Why spawn failed with ENOENT or ENOTDIR. Node reports a missing working
+ * directory with the same code as a missing binary, and blaming the install
+ * sent people to reinstall agy over a typo in `cwd`.
+ */
+async function spawnFailure(
+  error: NodeJS.ErrnoException,
+  cwd: string,
+  agyPath: string,
+): Promise<Error> {
+  if (error.code !== "ENOENT" && error.code !== "ENOTDIR") {
+    return new AgyFailure("agy_error", `agy failed: ${error.message}`);
+  }
+  const dir = await stat(cwd).catch(() => undefined);
+  if (!dir) return new InvalidRequestError(`Working directory "${cwd}" does not exist.`);
+  if (!dir.isDirectory())
+    return new InvalidRequestError(`Working directory "${cwd}" is not a directory.`);
+  return new AgyFailure(
+    "not_installed",
+    `agy CLI not found at "${agyPath}". Install the Antigravity CLI ` +
+      `(https://antigravity.google/docs/cli-getting-started) or set AGY_PATH.`,
+  );
+}
+
+/** Calls a caller's progress hook without letting its failure take the run with it. */
+function report(onProgress: ((p: RunProgress) => void) | undefined, p: RunProgress): void {
+  try {
+    onProgress?.(p);
+  } catch {
+    // Progress is advisory; the answer still has to come back.
   }
 }
 
@@ -275,9 +420,19 @@ export function truncate(text: string, max: number): Truncation {
   };
 }
 
-/** Text agy produced, whichever output format it was asked for. */
-function answerOf(envelope: AgyEnvelope | null, stdout: string): string {
+/**
+ * Text agy produced, whichever output format it was asked for. A streaming run
+ * cut off before its result event has no envelope, and its stdout is raw event
+ * JSON, so what it streamed is the answer.
+ */
+function answerOf(
+  envelope: AgyEnvelope | null,
+  stdout: string,
+  format: "json" | "stream-json" | undefined,
+  streamed: string,
+): string {
   if (envelope) return envelope.response.trim();
+  if (format === "stream-json") return streamed.trim();
   return stdout.trim();
 }
 
@@ -294,7 +449,16 @@ export async function runAgy(
   caps: Capabilities,
   deps: RunnerDeps = {},
 ): Promise<RunResult> {
-  assertPromptIsNotFlagLike(req.prompt);
+  assertPromptIsSendable(req.prompt);
+  if (req.signal?.aborted) throw new Error("agy run cancelled by client.");
+  if (caps.notInstalled) {
+    throw new AgyFailure(
+      "not_installed",
+      `agy CLI not found at "${cfg.agyPath}" when this server started. Install the Antigravity ` +
+        `CLI (https://antigravity.google/docs/cli-getting-started) or set AGY_PATH, then restart ` +
+        `the MCP server.`,
+    );
+  }
 
   const spawnAgy = deps.spawn ?? spawnDetached;
   const pollMs = deps.timing?.pollMs ?? 1000;
@@ -308,7 +472,9 @@ export async function runAgy(
   let timedOut = false;
   let trailingLog = "";
   let child: AgyProcess | undefined;
+  let untrack: (() => void) | undefined;
   let exited = false;
+  let streamedText = "";
 
   const finished = await new Promise<{ stdout: string; stderr: string; code: number | null }>(
     (resolve, reject) => {
@@ -317,19 +483,21 @@ export async function runAgy(
         ...(req.env ? { env: req.env } : {}),
       });
       const proc = child;
+      untrack = deps.track?.(proc);
 
       let settled = false;
       let polling = false;
       let streamCursor = 0;
       let streamRest = "";
-      let streamedText = "";
+      let escalate: NodeJS.Timeout | undefined;
       const timers: NodeJS.Timeout[] = [];
 
       const killChild = () => {
         proc.kill("SIGTERM");
         // Escalation must survive finish()'s cleanup, and unref keeps it from
-        // holding the process open.
-        const escalate = setTimeout(() => proc.kill("SIGKILL"), killGraceMs);
+        // holding the process open. It is cancelled once the child exits: a
+        // group signal sent after that can land on whatever reused the id.
+        escalate ??= setTimeout(() => proc.kill("SIGKILL"), killGraceMs);
         escalate.unref?.();
       };
       const finish = (fn: () => void) => {
@@ -343,16 +511,22 @@ export async function runAgy(
 
       const drainProgress = () => {
         if (!req.onProgress || outputFormat !== "stream-json") return;
+        // The cursor counts every char ever printed; the buffer may have dropped
+        // its head to stay under the cap, and a cursor past a dropped head
+        // would otherwise stall progress for the rest of the run.
         const all = proc.stdout();
-        if (all.length <= streamCursor) return;
-        const chunk = streamRest + all.slice(streamCursor);
-        streamCursor = all.length;
+        const dropped = proc.stdoutDropped?.() ?? 0;
+        if (dropped + all.length <= streamCursor) return;
+        const from = streamCursor - dropped;
+        if (from < 0) streamRest = "";
+        const chunk = streamRest + all.slice(Math.max(0, from));
+        streamCursor = dropped + all.length;
         const { events, rest } = parseStreamEvents(chunk);
         streamRest = rest;
         for (const ev of events) {
           if (ev.kind !== "step") continue;
           streamedText += ev.textDelta;
-          req.onProgress({
+          report(req.onProgress, {
             text: streamedText,
             stepIndex: ev.stepIndex,
             stepType: ev.stepType,
@@ -372,7 +546,8 @@ export async function runAgy(
           // while the run was finishing, and the post-run check then found an
           // empty log and reported "empty answer" instead of failing over.
           const appended = await tail.read();
-          if (appended) trailingLog += appended;
+          if (appended)
+            trailingLog = appendTail(trailingLog, appended, MAX_TRAILING_LOG_CHARS).text;
           if (settled) return; // settled during the async read — don't kill a finished run
           const quota = appended && detectQuota(appended);
           if (quota) {
@@ -413,24 +588,14 @@ export async function runAgy(
       }
       req.signal?.addEventListener("abort", onAbort, { once: true });
 
-      void proc.wait().then(({ code, error }) => {
+      void proc.wait().then(async ({ code, error }) => {
         exited = true;
+        if (escalate) clearTimeout(escalate);
         if (settled) return;
         drainProgress();
-        if (error?.code === "ENOENT") {
-          finish(() =>
-            reject(
-              new AgyFailure(
-                "not_installed",
-                `agy CLI not found at "${cfg.agyPath}". Install the Antigravity CLI ` +
-                  `(https://antigravity.google/docs/cli-getting-started) or set AGY_PATH.`,
-              ),
-            ),
-          );
-          return;
-        }
         if (error) {
-          finish(() => reject(new AgyFailure("agy_error", `agy failed: ${error.message}`)));
+          const failure = await spawnFailure(error, req.cwd, cfg.agyPath);
+          finish(() => reject(failure));
           return;
         }
         finish(() => resolve({ stdout: proc.stdout(), stderr: proc.stderr(), code }));
@@ -440,22 +605,24 @@ export async function runAgy(
     // A cancelled or timed-out child may still be writing its log: give it a
     // bounded chance to exit before the log is drained and removed.
     if (child && !exited) await Promise.race([child.wait(), delay(reapMs)]);
+    untrack?.();
     // Drain before deleting: a 429 that lands between the last poll tick and the
     // exit only exists in this file, and the post-run check below needs it.
-    trailingLog += await tail.flush();
+    trailingLog = appendTail(trailingLog, await tail.flush(), MAX_TRAILING_LOG_CHARS).text;
     await rm(logPath, { force: true }).catch(() => {});
   });
 
   // In text mode every line is model output, so nothing there may pass for an envelope.
   const envelope = outputFormat ? parseEnvelope(finished.stdout) : null;
-  const answer = answerOf(envelope, finished.stdout);
+  const answer = answerOf(envelope, finished.stdout, outputFormat, streamedText);
+  const spent = envelope?.usage;
 
   // A quota 429 never reaches stdout, only the log. Check it before anything
   // else and on every path: a run that overran its print-timeout is exactly
   // where exhaustion is most likely, and skipping the check there returned a
   // truncated answer as a success while the model stayed uncooled.
   const quota = detectQuota(trailingLog);
-  if (quota) throw new QuotaError(req.model, quota);
+  if (quota) throw Object.assign(new QuotaError(req.model, quota), spent ? { usage: spent } : {});
 
   if (!timedOut) {
     const failure = classifyRun({
@@ -463,7 +630,12 @@ export async function runAgy(
       exitCode: finished.code,
       stderr: finished.stderr,
     });
-    if (failure) throw new AgyFailure(failure.kind, failure.message, req.model);
+    if (failure) {
+      throw Object.assign(
+        new AgyFailure(failure.kind, failure.message, req.model),
+        spent ? { usage: spent } : {},
+      );
+    }
   }
 
   // Redaction and truncation both live in `Delegator.finish`, in that order, so

@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -19,6 +19,9 @@ function parse(raw: string): Record<string, number> {
   );
 }
 
+/** How many read-merge-write passes a save makes before accepting a lost race. */
+const SAVE_PASSES = 3;
+
 /** Both sets of cooldowns, keeping the later expiry where they disagree. */
 function merge(a: Record<string, number>, b: Record<string, number>): Record<string, number> {
   const out = { ...a };
@@ -36,10 +39,13 @@ function merge(a: Record<string, number>, b: Record<string, number>): Record<str
  * the same thing.
  *
  * Two servers can learn different 429s at the same moment, so a save merges
- * with what is on disk rather than replacing it: a cooldown is only ever
- * extended by another writer, never lost. Writes go to a uniquely named temp
- * file and are renamed into place, so a reader sees a whole file or none. When
- * the file cannot be written at all, this process still keeps its own entries.
+ * with what is on disk rather than replacing it. Writes go to a uniquely named
+ * temp file and are renamed into place, so a reader sees a whole file or none.
+ * Read-merge-rename is not atomic across processes, so a save reads the file
+ * back and merges again while another writer's rename has dropped one of its
+ * entries — bounded, because each pass can only lose to a writer that renamed
+ * in between. When the file cannot be written at all, this process still keeps
+ * its own entries.
  */
 export class FileCooldownStore implements CooldownStore {
   private readonly file: string;
@@ -65,14 +71,29 @@ export class FileCooldownStore implements CooldownStore {
     this.own = { ...entries };
     try {
       mkdirSync(path.dirname(this.file), { recursive: true });
+    } catch {
+      return; // A read-only cache dir degrades to in-process cooldowns; not fatal.
+    }
+    for (let pass = 0; pass < SAVE_PASSES; pass++) {
       const merged = merge(this.fromDisk(), entries);
       // Entries the caller dropped as expired stay dropped, on the caller's clock.
       for (const [model, until] of Object.entries(merged)) if (until <= now) delete merged[model];
-      const tmp = `${this.file}.${process.pid}.${randomUUID()}.tmp`;
-      writeFileSync(tmp, JSON.stringify(merged), "utf8");
+      if (!this.write(merged)) return;
+      const onDisk = this.fromDisk();
+      if (Object.entries(merged).every(([m, until]) => (onDisk[m] ?? 0) >= until)) return;
+    }
+  }
+
+  /** Whole-file replace; false when the file could not be written at all. */
+  private write(entries: Record<string, number>): boolean {
+    const tmp = `${this.file}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(tmp, JSON.stringify(entries), "utf8");
       renameSync(tmp, this.file);
+      return true;
     } catch {
-      // A read-only cache dir degrades to in-process cooldowns; not fatal.
+      rmSync(tmp, { force: true });
+      return false;
     }
   }
 }
