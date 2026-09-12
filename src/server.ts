@@ -103,6 +103,15 @@ export function renderDelegation(d: Delegation, timeoutSec: number, nonce: strin
     );
   }
 
+  if (d.continuation && !d.continuation.resumed) {
+    warnings.push(
+      `SESSION NOT RESUMED — you asked to continue ${d.continuation.requested}, but agy answered ` +
+        `from ${d.sessionId ? `a different conversation (${d.sessionId})` : "a different conversation"}, ` +
+        `so this answer has none of that history. agy does this when it cannot find the requested ` +
+        `conversation. Re-send the context, or continue the new session deliberately.`,
+    );
+  }
+
   const header = [
     `[claude-agy-mcp ${nonce}] ${meta.join(" | ")}`,
     ...warnings.map((w) => `[claude-agy-mcp ${nonce}] ${w}`),
@@ -121,6 +130,7 @@ function structuredOf(d: Delegation): Record<string, unknown> | undefined {
     result: d.structuredOutput,
     ...(d.model ? { model: d.model } : {}),
     ...(d.sessionId ? { session_id: d.sessionId } : {}),
+    ...(d.continuation ? { resumed: d.continuation.resumed } : {}),
     denied_actions: d.deniedActions,
     tokens: d.usage.totalTokens,
   };

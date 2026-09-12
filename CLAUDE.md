@@ -12,7 +12,8 @@ come back. Prefer delegating over doing it yourself when:
   catches what you miss)
 - **Follow-up question on a prior delegation** → `follow_up` with the returned
   session id (never resend the context). Add `write: true` when the follow-up
-  has to change files.
+  has to change files. A `SESSION NOT RESUMED` header line means agy could not
+  find that session and answered from a new one — re-send the context then.
 
 Do NOT delegate: small single-file edits, questions you can answer from
 context already loaded, or tasks needing tools only you have.

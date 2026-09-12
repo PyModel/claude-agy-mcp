@@ -51,6 +51,29 @@ function handlerFor(
 describe("renderDelegation", () => {
   const N = "abc123";
 
+  it("warns, inside the fence header, when a follow-up did not resume its conversation", () => {
+    const text = renderDelegation(
+      delegation({ sessionId: "brand-new", continuation: { requested: "old-id", resumed: false } }),
+      3600,
+      N,
+    );
+    const header = text.slice(0, text.indexOf("--- agy output begins"));
+    expect(header).toContain(`[claude-agy-mcp ${N}] SESSION NOT RESUMED`);
+    expect(header).toContain("old-id");
+    expect(header).toContain("brand-new");
+  });
+
+  it("stays quiet about continuity when the conversation was resumed or unknown", () => {
+    for (const continuation of [{ requested: "abc", resumed: true }, undefined]) {
+      const text = renderDelegation(
+        delegation({ ...(continuation ? { continuation } : {}) }),
+        3600,
+        N,
+      );
+      expect(text).not.toContain("SESSION NOT RESUMED");
+    }
+  });
+
   it("puts its metadata in a nonce-fenced header, before the payload", () => {
     const text = renderDelegation(delegation(), 3600, N);
     expect(text.startsWith(`[claude-agy-mcp ${N}] model: Gemini 3.7 Flash (High)`)).toBe(true);
