@@ -384,14 +384,6 @@ export class Delegator {
   }
 
   /**
-   * Every workspace root this call needs: what the caller asked for, plus the
-   * directories the tool's own arguments imply — a file outside `cwd` is not in
-   * agy's workspace unless its directory is added too.
-   *
-   * Whatever this returns is containment-checked by `assertMayDelegate`, so a
-   * derived root can never widen the caller's reach.
-   */
-  /**
    * How this call is kept read-only, or undefined for a call allowed to write.
    * Confinement follows the configured policy and what the machine supports.
    */
@@ -415,6 +407,14 @@ export class Delegator {
     return this.readOnlyFor(req)?.enforced ? [req.cwd, ...this.dirsFor(req)] : undefined;
   }
 
+  /**
+   * Every workspace root this call needs: what the caller asked for, plus the
+   * directories the tool's own arguments imply — a file outside `cwd` is not in
+   * agy's workspace unless its directory is added too.
+   *
+   * Whatever this returns is containment-checked by `assertMayDelegate`, so a
+   * derived root can never widen the caller's reach.
+   */
   private dirsFor(req: DelegationRequest): string[] {
     return [...new Set([...(req.dirs ?? []), ...req.tool.extraDirs(req.args, req.cwd)])];
   }

@@ -22,4 +22,11 @@ describe("snapshotTree and agy's state directory", () => {
     writeFileSync(join(home, "notes.txt"), "x");
     expect(treeChanged(before, await snapshotTree(home))).toBe(true);
   });
+
+  it("does not fingerprint a root inside agy's state, rather than always reporting a change", async () => {
+    mkdirSync(join(home, ".gemini", "skills"), { recursive: true });
+    const snap = await snapshotTree(join(home, ".gemini", "skills"));
+    expect(snap.method).toBe("none");
+    expect(snap.digest).toBeUndefined();
+  });
 });

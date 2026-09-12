@@ -46,6 +46,10 @@ export interface TreeSnapshot {
   reason?: string;
 }
 
+/** agy's state, or anything beneath it: agy writes there on every run. */
+const insideState = (full: string) =>
+  full === AGY_STATE_DIR || full.startsWith(AGY_STATE_DIR + path.sep);
+
 /** Never descended into anywhere: git's own store changes on every read. */
 const ALWAYS_SKIP = new Set([".git"]);
 /**
@@ -146,7 +150,7 @@ async function walk(
     const full = path.join(dir, e.name);
     // agy writes its own state on every run, and a confined run may, so a root
     // holding it would otherwise always look changed.
-    if (full === AGY_STATE_DIR) continue;
+    if (insideState(full)) continue;
     await hashMeta(hash, full);
     if (e.isDirectory()) {
       const incomplete = await walk(hash, full, budget, false);
@@ -175,7 +179,7 @@ async function hashListed(
     const over = overBudget(budget);
     if (over) return over;
     const full = path.join(root, rel);
-    if (full.replace(/\/$/, "") === AGY_STATE_DIR) continue;
+    if (insideState(full.replace(/\/$/, ""))) continue;
     await hashMeta(hash, full);
     if (!rel.endsWith("/")) continue;
     if (TOP_SKIP.has(path.basename(full)) && path.dirname(full) === root) continue;
@@ -284,6 +288,9 @@ async function scanSnapshot(cwd: string): Promise<TreeSnapshot> {
  * it is ignore-aware and content-exact; a bounded metadata walk otherwise.
  */
 export async function snapshotTree(cwd: string): Promise<TreeSnapshot> {
+  if (insideState(path.resolve(cwd))) {
+    return { method: "none", reason: "inside agy's own state directory; not fingerprinted" };
+  }
   return (await gitSnapshot(cwd)) ?? (await scanSnapshot(cwd));
 }
 
