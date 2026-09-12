@@ -138,18 +138,15 @@ describe("probeConfinement", () => {
 
 describe("commandFor", () => {
   it("leaves an unconfined run alone", () => {
-    expect(commandFor({ prompt: "x", cwd: "/r", timeoutSec: 1 }, "agy", ["a"], {})).toEqual({
+    expect(commandFor(undefined, "agy", ["a"], undefined)).toEqual({
       file: "agy",
       args: ["a"],
     });
   });
 
   it("refuses a confined run it cannot confine", () => {
-    const req = { prompt: "x", cwd: "/r", timeoutSec: 1, confineTo: ["/r"] };
-    expect(() => commandFor(req, "agy", [], {})).toThrow(/Refusing/);
-    expect(() =>
-      commandFor(req, "agy", [], { confinement: unavailableConfinement("nope") }),
-    ).toThrow(/nope/);
+    expect(() => commandFor(["/r"], "agy", [], undefined)).toThrow(/Refusing/);
+    expect(() => commandFor(["/r"], "agy", [], unavailableConfinement("nope"))).toThrow(/nope/);
   });
 });
 

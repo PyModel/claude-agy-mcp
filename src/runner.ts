@@ -454,21 +454,21 @@ function outputFormatFor(req: RunRequest, caps: Capabilities): "json" | "stream-
  * same rule `buildArgs` applies to a restricting flag agy lacks.
  */
 export function commandFor(
-  req: RunRequest,
+  confineTo: string[] | undefined,
   agyPath: string,
   args: string[],
-  deps: RunnerDeps,
+  confinement: Confinement | undefined,
 ): { file: string; args: string[] } {
-  if (!req.confineTo) return { file: agyPath, args };
-  if (!deps.confinement?.available) {
+  if (!confineTo) return { file: agyPath, args };
+  if (!confinement?.available) {
     throw new AgyFailure(
       "agy_error",
       `This run asked to be confined against writes, but confinement is unavailable` +
-        `${deps.confinement?.reason ? ` (${deps.confinement.reason})` : ""}. Refusing rather than ` +
+        `${confinement?.reason ? ` (${confinement.reason})` : ""}. Refusing rather than ` +
         `running with more authority than requested.`,
     );
   }
-  return deps.confinement.wrap(agyPath, args, req.confineTo);
+  return confinement.wrap(agyPath, args, confineTo);
 }
 
 export async function runAgy(
@@ -505,10 +505,10 @@ export async function runAgy(
   let streamedText = "";
 
   const command = commandFor(
-    req,
+    req.confineTo,
     cfg.agyPath,
     buildArgs(req, cfg, { logPath, caps, outputFormat }),
-    deps,
+    deps.confinement,
   );
   const finished = await new Promise<{ stdout: string; stderr: string; code: number | null }>(
     (resolve, reject) => {

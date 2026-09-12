@@ -4,7 +4,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { Capabilities } from "./capabilities.js";
 import type { Confinement } from "./confine.js";
 import type { Config } from "./config.js";
-import { MAX_STDOUT_CHARS } from "./runner.js";
+import { commandFor, MAX_STDOUT_CHARS } from "./runner.js";
 import { parseStreamEvents, type AgyEnvelope, type AgyUsage } from "./envelope.js";
 
 /**
@@ -339,13 +339,7 @@ export class WarmSessions {
     const spawnFn = this.deps.spawnSession ?? spawnSessionProcess;
     let proc: SessionProcess;
     try {
-      let command = { file: this.cfg.agyPath, args };
-      if (confineTo) {
-        if (!this.deps.confinement?.available) {
-          throw new Error("write confinement is unavailable");
-        }
-        command = this.deps.confinement.wrap(this.cfg.agyPath, args, confineTo);
-      }
+      const command = commandFor(confineTo, this.cfg.agyPath, args, this.deps.confinement);
       proc = spawnFn(command.file, command.args, {
         cwd,
         ...(this.deps.env ? { env: this.deps.env } : {}),
