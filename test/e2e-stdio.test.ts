@@ -60,7 +60,7 @@ const textOf = (res: unknown): string =>
 describe("the built server over stdio", () => {
   beforeAll(() => {
     // Always rebuild: a stale bundle would let this suite pass against old code.
-    execFileSync("npx", ["tsup"], { cwd: ROOT, stdio: "ignore" });
+    execFileSync("npm", ["run", "build"], { cwd: ROOT, stdio: "ignore" });
   }, 60_000);
 
   const clients: Client[] = [];

@@ -10,15 +10,17 @@ const exec = promisify(execFile);
  * Evidence about whether a run changed the workspace.
  *
  * The bridge cannot stop a plan-mode run from writing: `--mode plan` is
- * advisory once `--dangerously-skip-permissions` is on, verified against agy
- * 1.2.1 and again against 1.2.2. What it can do is notice. A read-only tool
+ * advisory, verified against agy 1.2.1 and 1.2.2 with the permission bypass on
+ * and against 1.2.2 with it off. What it can do is notice. A read-only tool
  * that returns `changed: true` did something it said it would not, and the
  * caller is told rather than left to assume.
  *
  * What the fingerprint covers, and what it cannot:
  * - In a git repository: HEAD, the content and mode of every tracked change
- *   (staged or not), and the content of every untracked file. Files git
- *   ignores are not covered; a build output or `.env` written there is missed.
+ *   (staged or not), the content of every untracked file, and the mode, size
+ *   and mtime of every ignored entry, a wholly ignored directory counting as
+ *   one entry. A `.env` written in plan mode is seen; a rewrite of one file
+ *   deep inside `node_modules` is not.
  * - Elsewhere: path, type, size, mode and mtime of every entry, bounded in
  *   count and time.
  * - Anything else writing to the same tree during the run — an editor, a
@@ -132,6 +134,36 @@ async function gitSnapshot(cwd: string): Promise<TreeSnapshot | undefined> {
         child.stdin.end(`${files.join("\n")}\n`);
       });
       if (!objects) return undefined;
+    }
+    // Ignored entries by metadata: git never reads their contents, so a `.env`
+    // or a build output written in plan mode would otherwise pass unnoticed.
+    // `--directory` collapses a wholly ignored directory to one entry, so
+    // node_modules is a single lstat whose mtime moves when a direct child is
+    // added or removed; a rewrite deeper inside it is the accepted blind spot.
+    const { stdout: ignored } = await exec(
+      "git",
+      [
+        "--no-optional-locks",
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "--directory",
+        "-z",
+      ],
+      { cwd: root, timeout: GIT_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 },
+    );
+    const entries = ignored.split("\0").filter(Boolean);
+    if (entries.length > MAX_ENTRIES) return undefined;
+    for (const rel of entries) {
+      hash.update(rel).update("\0");
+      try {
+        const st = await lstat(path.join(root, rel));
+        hash.update(`${st.mode}:${st.size}:${st.mtimeMs}`);
+      } catch {
+        hash.update("missing");
+      }
+      hash.update("\0");
     }
     return { method: "git", digest: hash.digest("hex") };
   } catch {

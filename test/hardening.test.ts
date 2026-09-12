@@ -206,6 +206,35 @@ describe("working-tree fingerprint", () => {
     expect(await changed(dir, () => chmodSync(path.join(dir, "tracked.txt"), 0o755))).toBe(true);
   });
 
+  it("sees a write to a file git ignores", async () => {
+    // A plan-mode run that writes `.env` used to pass as read-only: git never
+    // lists ignored files, and the fingerprint only asked git.
+    const dir = repo();
+    writeFileSync(path.join(dir, ".gitignore"), ".env\nbuild/\n");
+    expect(await changed(dir, () => writeFileSync(path.join(dir, ".env"), "SECRET=1\n"))).toBe(
+      true,
+    );
+  });
+
+  it("sees a file added to an ignored directory, and a rewrite of an ignored file", async () => {
+    const dir = repo();
+    writeFileSync(path.join(dir, ".gitignore"), ".env\nbuild/\n");
+    mkdirSync(path.join(dir, "build"));
+    writeFileSync(path.join(dir, ".env"), "A=1\n");
+    expect(await changed(dir, () => writeFileSync(path.join(dir, "build", "out.js"), "x"))).toBe(
+      true,
+    );
+    expect(await changed(dir, () => writeFileSync(path.join(dir, ".env"), "A=22\n"))).toBe(true);
+  });
+
+  it("still reports an untouched repository with ignored entries as unchanged", async () => {
+    const dir = repo();
+    writeFileSync(path.join(dir, ".gitignore"), "node_modules/\n");
+    mkdirSync(path.join(dir, "node_modules", "pkg"), { recursive: true });
+    writeFileSync(path.join(dir, "node_modules", "pkg", "index.js"), "x");
+    expect(await changed(dir, () => {})).toBe(false);
+  });
+
   it("reports unknown when the two sides were taken by different methods", () => {
     expect(treeChanged({ method: "git", digest: "a" }, { method: "scan", digest: "b" })).toBe(
       undefined,

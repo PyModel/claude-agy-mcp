@@ -96,9 +96,9 @@ type ToolSchema = z.ZodObject<z.ZodRawShape>;
  * How much authority a tool's runs ask for.
  *
  * `read-only` pins `--mode plan`. Read that as a request, not a guarantee:
- * plan mode is advisory once `--dangerously-skip-permissions` is on, which is
- * the default, and it was verified against agy 1.2.1 and 1.2.2 that a plan-mode
- * run will still create files. `denied_actions` only ever populates when the
+ * plan mode is advisory with the permission bypass on or off, and it was
+ * verified against agy 1.2.1 and 1.2.2 that a plan-mode run will still create
+ * files. `denied_actions` only ever populates when the
  * permission grant is off, so its absence proves nothing either.
  *
  * The proof comes from outside agy: the bridge fingerprints the working tree

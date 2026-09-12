@@ -163,13 +163,13 @@ default (`AGY_SKIP_PERMISSIONS=true`). The human accepted that trade-off on 2026
 What that means in practice, and what the bridge does about it:
 
 - **Read-only is a request, not an enforcement.** Read-only tools pass `--mode plan`, but plan mode is
-  advisory once permissions are skipped. Verified against agy 1.2.1 and again against 1.2.2: a
-  plan-mode run creates files.
+  advisory with the permission bypass on or off. Verified against agy 1.2.1 and again against 1.2.2:
+  a plan-mode run creates files.
 - **So the bridge watches instead of promising.** It fingerprints the working tree around every
   plan-mode run and adds a `READ-ONLY VIOLATION` warning to the header when the tree changed. Absence
   of the warning means it looked and found nothing; a run it could not fingerprint says nothing at all
-  rather than claiming the tree is clean. Files git ignores are outside the fingerprint, and any other
-  writer during the run moves it too.
+  rather than claiming the tree is clean. Files git ignores are covered by size and mtime only, a
+  wholly ignored directory as one entry, and any other writer during the run moves it too.
 - **A write run that may have taken effect is never repeated for you.** After a network error or a
   429, a `write: true` run is retried or failed over only when the tree is provably unchanged.
   Otherwise the call fails with `Not retried` or `Not failed over`: inspect the tree, then re-dispatch
