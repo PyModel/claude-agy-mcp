@@ -159,8 +159,9 @@ claude mcp add-json -s user claude-agy-mcp \
 
 # 2. Install the bundled skills into every agent found on this machine.
 #    The server gives an agent the tools; the skills tell it when to use them.
-npx @pymodel/claude-agy-mcp-install-skills
-#    --list to preview, --dir <path> to install somewhere explicit.
+npx --package @pymodel/claude-agy-mcp claude-agy-mcp-install-skills
+#    --list to preview, --dir <path> to install somewhere explicit,
+#    --force to replace a skill you have symlinked to your own checkout.
 
 # 3. Optional: add delegation rules to your project (or ~/.claude/CLAUDE.md).
 curl -o CLAUDE.md https://raw.githubusercontent.com/PyModel/claude-agy-mcp/main/CLAUDE.md

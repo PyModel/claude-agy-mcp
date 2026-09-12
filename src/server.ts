@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { probeCapabilities, type Capabilities } from "./capabilities.js";
 import { loadConfig, timeoutFor, type Config } from "./config.js";
@@ -23,8 +24,17 @@ const SET_MODEL_ARGS = z.object({
   effort: z.enum(["low", "medium", "high"]).optional(),
 });
 
-/** Keep in sync with package.json — test/server.test.ts fails if they drift. */
-export const VERSION = "3.0.0";
+/**
+ * Read from package.json rather than restated here, so the handshake cannot
+ * advertise a version the package does not have. `../package.json` resolves to
+ * the package root from both `src/` and the bundled `dist/`, and npm always
+ * ships package.json regardless of the `files` array.
+ */
+export const VERSION: string = (
+  JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+    version: string;
+  }
+).version;
 
 interface ToolResponse {
   [key: string]: unknown;

@@ -440,4 +440,18 @@ it("advertises the published package version", async () => {
     await readFile(new URL("../package.json", import.meta.url), "utf8"),
   );
   expect(VERSION).toBe(pkg.version);
+  expect(VERSION).toMatch(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+});
+
+// VERSION reads `../package.json` relative to its own module. That is only
+// correct while the bundle entry sits exactly one directory below the package
+// root, so the bin path is asserted rather than assumed: move dist/index.js
+// deeper and the handshake would read a file that is not there.
+it("keeps the bundled entry one directory below the package root", async () => {
+  const pkg: { bin: Record<string, string> } = JSON.parse(
+    await readFile(new URL("../package.json", import.meta.url), "utf8"),
+  );
+  for (const target of Object.values(pkg.bin)) {
+    expect(target.split("/")).toHaveLength(2);
+  }
 });

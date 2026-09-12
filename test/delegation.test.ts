@@ -297,11 +297,14 @@ describe("Delegator guards", () => {
       delegator.run(request("delegate", { prompt: "x" })),
     );
 
-    // Let every admitted run reach the spawn, then drain them one at a time.
+    // Drain one at a time, waiting for each admitted run to actually reach the
+    // spawn. A single macrotask tick is not enough under load: the gate would
+    // still be empty, the shift would be a no-op, and the assertion below would
+    // measure an empty semaphore rather than a full one.
     for (let i = 0; i < 6; i++) {
-      await new Promise((r) => setTimeout(r, 0));
+      while (gates.length === 0) await new Promise((r) => setTimeout(r, 0));
       expect(live).toBeLessThanOrEqual(2);
-      gates.shift()?.();
+      gates.shift()!();
     }
     await Promise.all(running);
     expect(peak).toBe(2);
