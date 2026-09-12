@@ -43,6 +43,9 @@ function sandbox() {
   execFileSync("mkdir", ["-p", pids, work]);
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
+    // Inherited from an agent host, this depth would make the server refuse to
+    // delegate at all; the suite is the top of its own chain.
+    AGY_DELEGATION_DEPTH: "0",
     AGY_PATH: FAKE_AGY,
     AGY_ASK_MODEL: "false",
     AGY_WARM_SESSIONS: "false",

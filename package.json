@@ -20,7 +20,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "rm -rf dist && esbuild src/index.ts --bundle --platform=node --format=esm --target=node18 --packages=external --outfile=dist/index.js",
+    "build": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\" && esbuild src/index.ts --bundle --platform=node --format=esm --target=node18 --external:@modelcontextprotocol/sdk --external:zod --outfile=dist/index.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",

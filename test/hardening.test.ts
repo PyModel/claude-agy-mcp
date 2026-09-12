@@ -227,6 +227,48 @@ describe("working-tree fingerprint", () => {
     expect(await changed(dir, () => writeFileSync(path.join(dir, ".env"), "A=22\n"))).toBe(true);
   });
 
+  it("sees a rewrite of a file inside an ignored directory, not only at its top", async () => {
+    const dir = repo();
+    writeFileSync(path.join(dir, ".gitignore"), "build/\n");
+    mkdirSync(path.join(dir, "build", "sub"), { recursive: true });
+    writeFileSync(path.join(dir, "build", "sub", "a.js"), "one");
+    expect(
+      await changed(dir, () => writeFileSync(path.join(dir, "build", "sub", "a.js"), "two!")),
+    ).toBe(true);
+  });
+
+  it("keeps the git method, and sees a write, when an untracked nested repository is present", async () => {
+    const dir = repo();
+    mkdirSync(path.join(dir, "nested"));
+    git(path.join(dir, "nested"), "init", "-q");
+    writeFileSync(path.join(dir, "nested", "f.txt"), "one");
+    expect((await snapshotTree(dir)).method).toBe("git");
+    expect(await changed(dir, () => writeFileSync(path.join(dir, "nested", "f.txt"), "two!"))).toBe(
+      true,
+    );
+  });
+
+  it("keeps the git method when an untracked file name contains a newline", async () => {
+    const dir = repo();
+    const odd = path.join(dir, "odd\nname.txt");
+    writeFileSync(odd, "one");
+    expect((await snapshotTree(dir)).method).toBe("git");
+    expect(await changed(dir, () => writeFileSync(odd, "two!"))).toBe(true);
+  });
+
+  it("cuts a huge ignored directory at a fixed count, so an unchanged tree still compares equal", async () => {
+    const dir = repo();
+    writeFileSync(path.join(dir, ".gitignore"), "cache/\n");
+    mkdirSync(path.join(dir, "cache"));
+    for (let i = 0; i < 1200; i++) writeFileSync(path.join(dir, "cache", `f${i}.bin`), "x");
+    expect((await snapshotTree(dir)).method).toBe("git");
+    expect(await changed(dir, () => {})).toBe(false);
+    // f0 sorts first, so it is inside the walked prefix.
+    expect(await changed(dir, () => writeFileSync(path.join(dir, "cache", "f0.bin"), "yy"))).toBe(
+      true,
+    );
+  });
+
   it("still reports an untouched repository with ignored entries as unchanged", async () => {
     const dir = repo();
     writeFileSync(path.join(dir, ".gitignore"), "node_modules/\n");

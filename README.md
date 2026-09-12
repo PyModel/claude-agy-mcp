@@ -320,12 +320,13 @@ All optional, via environment variables:
 > changed. No warning means it looked and found nothing; a tree it could not fingerprint produces no
 > claim in either direction. The fingerprint covers `cwd` and every directory the call hands agy. In
 > a git repository it covers HEAD, the content and mode of every tracked change, the content of
-> every untracked file, and the mode, size and mtime of every ignored entry, a wholly ignored
-> directory counting as one entry — so a `.env` written in plan mode is seen, while a rewrite of one
-> file deep inside `node_modules` is not. Outside git it compares path, type, size, mode and mtime,
-> bounded to 20,000 entries and 10s. Measured on an Apple M5 Max: about 75 ms per snapshot on a clean
-> 3,500-file repository, and about 750 ms with 300 modified and 3,000 untracked files; two snapshots
-> bracket each run.
+> every untracked file, and the mode, size and mtime of every ignored entry, ignored directories
+> walked the same way. A dependency or build tree at the repository top (`node_modules`, `.venv`,
+> `venv`, `__pycache__`, `.next`, `dist`) counts as one entry — so a `.env` or `build/out.js` written
+> in plan mode is seen, while a rewrite deep inside `node_modules` is not. Outside git it compares
+> path, type, size, mode and mtime. Both are bounded to 20,000 entries and 10s. Measured on an Apple
+> M5 Max: about 150 ms per snapshot on a clean 3,500-file repository, and about 1.1 s
+> with 300 modified and 3,000 untracked files; two snapshots bracket each run.
 > Anything else writing to the tree while the run is live (an editor, a watcher, a parallel write
 > delegation) also moves it: the warning means the tree changed during the run, not proof of who
 > changed it. A plan run that wrote and then failed carries the warning in its error. That warning, not the tool's name and not the absence of a
