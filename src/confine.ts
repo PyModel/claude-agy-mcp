@@ -109,6 +109,17 @@ const strictlyInside = (child: string, parent: string) => {
   return rel !== "" && !rel.startsWith("..") && !rel.startsWith("/");
 };
 
+/**
+ * A root at or inside agy's state directory cannot be confined: agy must write
+ * there to run at all, so blocking it breaks agy and exempting it blocks nothing.
+ */
+export function rootInsideState(roots: string[], stateDirs: string[] = [AGY_STATE_DIR]): boolean {
+  const state = confinedRoots(stateDirs);
+  return confinedRoots(roots).some((root) =>
+    state.some((dir) => root === dir || strictlyInside(root, dir)),
+  );
+}
+
 /** State directories that sit strictly inside a root, in every spelling. */
 export function carveOuts(roots: string[], stateDirs: string[]): string[] {
   const out = new Set<string>();
@@ -178,11 +189,14 @@ export async function probeConfinement(
     const ok = confinement.wrap("/usr/bin/true", [], [root]);
     await run(ok.file, ok.args);
     const write = confinement.wrap("/usr/bin/touch", [target], [root]);
-    const wrote = await run(write.file, write.args).then(
-      () => true,
+    // touch exits 1 when the write is refused. A timeout or a signal also
+    // rejects, and must not pass for a refusal.
+    const refused = await run(write.file, write.args).then(
       () => false,
+      (err: { code?: unknown; killed?: boolean; signal?: unknown }) =>
+        err.code === 1 && !err.killed && !err.signal,
     );
-    if (wrote || existsSync(target)) {
+    if (!refused || existsSync(target)) {
       return unavailableConfinement(`${SANDBOX_EXEC} did not block a write in its probe`);
     }
     return confinement;

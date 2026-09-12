@@ -390,7 +390,8 @@ Deliberately not addressed, so they are not mistaken for oversights:
   is blocked, and so is renaming any directory above a root to move the tree out from under
   its rule. The working-tree fingerprint still reports a change made through an old link.
 - **A root that holds agy's state stays partly writable.** When a root contains `~/.gemini`,
-  that directory is exempt so agy can still run; a write there is not blocked.
+  that directory is exempt so agy can still run; a write there is not blocked, and the
+  fingerprint skips it. A root at or inside `~/.gemini` is watched, not enforced.
 - **A fan-out sharing one `session_id` runs sequentially.** agy holds a
   per-conversation lock, so concurrent turns against one conversation would corrupt it.
   Fan out across conversations for parallelism.

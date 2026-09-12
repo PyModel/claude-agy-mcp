@@ -251,7 +251,7 @@ export class WarmSessions {
     const confinedTo = confinementKey(opts.confineTo);
     const mismatch = !existing
       ? undefined
-      : existing.cwd !== cwd
+      : resolvePath(existing.cwd) !== resolvePath(cwd)
         ? "resident session belongs to a different working directory"
         : existing.confinedTo !== confinedTo
           ? "resident session was started with different write confinement"

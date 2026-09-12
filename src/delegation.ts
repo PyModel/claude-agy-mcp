@@ -2,6 +2,7 @@ import type { Capabilities } from "./capabilities.js";
 import { Admission } from "./concurrency.js";
 import { delegationDepth, type Config } from "./config.js";
 import { assertWithinRoots, redact, redactDeep } from "./egress.js";
+import { rootInsideState } from "./confine.js";
 import { combineSnapshots, snapshotTree, treeChanged, type TreeSnapshot } from "./worktree.js";
 import { EMPTY_USAGE, type AgyUsage, type DeniedAction } from "./envelope.js";
 import { AgyFailure } from "./failure.js";
@@ -402,6 +403,9 @@ export class Delegator {
     const confinement = this.deps.confinement;
     if (!confinement?.available) {
       return { enforced: false, reason: confinement?.reason ?? "write confinement was not set up" };
+    }
+    if (rootInsideState([req.cwd, ...this.dirsFor(req)])) {
+      return { enforced: false, reason: "a root is inside agy's own state directory" };
     }
     return { enforced: true };
   }

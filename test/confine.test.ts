@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { mkdtempSync, mkdirSync, existsSync, realpathSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect } from "vitest";
 import {
@@ -8,6 +8,7 @@ import {
   confinedRoots,
   probeConfinement,
   rootAncestors,
+  rootInsideState,
   SANDBOX_EXEC,
   sandboxConfinement,
   sandboxProfile,
@@ -96,6 +97,12 @@ describe("rootAncestors and carveOuts", () => {
     expect(rootAncestors(["/a/b/c"]).sort()).toEqual(["/a", "/a/b"]);
   });
 
+  it("knows a root at or inside the state directory cannot be confined", () => {
+    expect(rootInsideState(["/home/u/.gemini"], ["/home/u/.gemini"])).toBe(true);
+    expect(rootInsideState(["/home/u/.gemini/skills"], ["/home/u/.gemini"])).toBe(true);
+    expect(rootInsideState(["/home/u"], ["/home/u/.gemini"])).toBe(false);
+  });
+
   it("carves out a state directory only when a root strictly contains it", () => {
     expect(carveOuts(["/home/u"], ["/home/u/.gemini"])).toEqual(["/home/u/.gemini"]);
     expect(carveOuts(["/home/u/.gemini"], ["/home/u/.gemini"])).toEqual([]);
@@ -124,9 +131,18 @@ describe("probeConfinement", () => {
 
   it("is available when the probe runs and its write is refused", async () => {
     const c = await probeConfinement("darwin", async (_file, args) => {
-      if (args.includes("/usr/bin/touch")) throw new Error("Operation not permitted");
+      if (args.includes("/usr/bin/touch")) throw Object.assign(new Error("denied"), { code: 1 });
     });
     expect(c.available).toBe(true);
+  });
+
+  it("does not take a timed-out write for a refused one", async () => {
+    const c = await probeConfinement("darwin", async (_file, args) => {
+      if (args.includes("/usr/bin/touch")) {
+        throw Object.assign(new Error("timeout"), { code: null, killed: true, signal: "SIGTERM" });
+      }
+    });
+    expect(c.available).toBe(false);
   });
 
   it("is unavailable when the probe's write is not refused", async () => {
@@ -227,6 +243,19 @@ describe("Delegator read-only enforcement", () => {
     expect(text).toContain(READ_ONLY_TREE_MOVED);
     expect(text).not.toContain(READ_ONLY_VIOLATION);
     expect(text).toContain("read-only: enforced");
+  });
+
+  it("watches, and says why, a run whose root is agy's own state directory", async () => {
+    const agy = fakeAgy({ answer: "done" });
+    const d = await makeDelegator({
+      spawn: agy.spawn,
+      confinement: recordingConfinement().confinement,
+    }).delegator.run({ ...request("delegate", { prompt: "x" }), cwd: join(homedir(), ".gemini") });
+    expect(agy.files).toEqual(["agy"]);
+    expect(d.readOnly).toEqual({
+      enforced: false,
+      reason: "a root is inside agy's own state directory",
+    });
   });
 
   it("reports status of enforcement", () => {

@@ -339,7 +339,10 @@ describe("WarmSessions mismatch", () => {
     const first = warm.turn("conv-1", "/repo", "q", { ...TURN, confineTo: ["/repo", "/other"] });
     s.answer("ok");
     await first;
-    const second = warm.turn("conv-1", "/repo", "q2", { ...TURN, confineTo: ["/other/", "/repo"] });
+    const second = warm.turn("conv-1", "/repo/", "q2", {
+      ...TURN,
+      confineTo: ["/other/", "/repo"],
+    });
     s.answer("ok2");
     await second;
     expect(s.spawned).toHaveLength(1);

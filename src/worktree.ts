@@ -3,6 +3,7 @@ import { createHash, type Hash } from "node:crypto";
 import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { AGY_STATE_DIR } from "./confine.js";
 
 const exec = promisify(execFile);
 
@@ -143,6 +144,9 @@ async function walk(
     const over = overBudget(budget);
     if (over) return over;
     const full = path.join(dir, e.name);
+    // agy writes its own state on every run, and a confined run may, so a root
+    // holding it would otherwise always look changed.
+    if (full === AGY_STATE_DIR) continue;
     await hashMeta(hash, full);
     if (e.isDirectory()) {
       const incomplete = await walk(hash, full, budget, false);
@@ -171,6 +175,7 @@ async function hashListed(
     const over = overBudget(budget);
     if (over) return over;
     const full = path.join(root, rel);
+    if (full.replace(/\/$/, "") === AGY_STATE_DIR) continue;
     await hashMeta(hash, full);
     if (!rel.endsWith("/")) continue;
     if (TOP_SKIP.has(path.basename(full)) && path.dirname(full) === root) continue;
