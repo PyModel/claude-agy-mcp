@@ -3,7 +3,7 @@ import { createHash, type Hash } from "node:crypto";
 import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { AGY_STATE_DIR } from "./confine.js";
+import { AGY_STATE_DIR, confinedRoots } from "./confine.js";
 
 const exec = promisify(execFile);
 
@@ -48,7 +48,7 @@ export interface TreeSnapshot {
 
 /** agy's state, or anything beneath it: agy writes there on every run. */
 const insideState = (full: string) =>
-  full === AGY_STATE_DIR || full.startsWith(AGY_STATE_DIR + path.sep);
+  confinedRoots([AGY_STATE_DIR]).some((dir) => full === dir || full.startsWith(dir + path.sep));
 
 /** Never descended into anywhere: git's own store changes on every read. */
 const ALWAYS_SKIP = new Set([".git"]);
@@ -192,6 +192,17 @@ async function hashListed(
   return undefined;
 }
 
+/** Pathspecs leaving agy's state out of every git listing, when the repository holds it. */
+function stateExclusion(root: string): string[] {
+  for (const dir of confinedRoots([AGY_STATE_DIR])) {
+    const rel = path.relative(root, dir);
+    if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) {
+      return ["--", ".", `:(exclude,top,literal)${rel}`];
+    }
+  }
+  return [];
+}
+
 /** `git ls-files --others` with the given selectors, NUL-split. */
 async function listOthers(root: string, selectors: string[]): Promise<string[]> {
   const { stdout } = await exec(
@@ -242,12 +253,14 @@ async function gitSnapshot(cwd: string): Promise<TreeSnapshot | undefined> {
     hash.update(head).update("\0");
     // Content and mode of every tracked change against HEAD, staged or not.
     // Before the first commit there is no HEAD, and the index diff stands in.
+    const skip = stateExclusion(root);
     const diff = head
-      ? ["diff", "HEAD", "--binary", "--no-ext-diff", "--no-color"]
-      : ["diff", "--cached", "--binary", "--no-ext-diff", "--no-color"];
+      ? ["diff", "HEAD", "--binary", "--no-ext-diff", "--no-color", ...skip]
+      : ["diff", "--cached", "--binary", "--no-ext-diff", "--no-color", ...skip];
     if (!(await hashGit(root, diff, hash))) return undefined;
     hash.update("\0");
-    if (!(await hashGit(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], hash))) {
+    const status = ["status", "--porcelain=v1", "-z", "--untracked-files=all", ...skip];
+    if (!(await hashGit(root, status, hash))) {
       return undefined;
     }
     hash.update("\0");
@@ -255,7 +268,7 @@ async function gitSnapshot(cwd: string): Promise<TreeSnapshot | undefined> {
     // `ls-files -o` hashed by `hash-object` covers what they now contain. A
     // nested repository is listed as a directory, and a name with a newline
     // cannot cross hash-object's line-based stdin; both go by metadata instead.
-    const untracked = await listOthers(root, []);
+    const untracked = await listOthers(root, skip);
     const byMeta = untracked.filter((f) => f.endsWith("/") || f.includes("\n"));
     const byContent = untracked.filter((f) => !byMeta.includes(f));
     if (byContent.length > MAX_ENTRIES) return undefined;
@@ -267,7 +280,7 @@ async function gitSnapshot(cwd: string): Promise<TreeSnapshot | undefined> {
     // output written in plan mode would otherwise pass unnoticed. `--directory`
     // collapses a wholly ignored directory to one entry; hashListed decides
     // whether to walk it.
-    const ignored = await listOthers(root, ["--ignored", "--directory"]);
+    const ignored = await listOthers(root, ["--ignored", "--directory", ...skip]);
     if (await hashListed(hash, root, ignored, budget)) return undefined;
     return { method: "git", digest: hash.digest("hex") };
   } catch {
@@ -287,8 +300,10 @@ async function scanSnapshot(cwd: string): Promise<TreeSnapshot> {
  * Fingerprints `cwd`. Git when the directory is inside a repository, because
  * it is ignore-aware and content-exact; a bounded metadata walk otherwise.
  */
-export async function snapshotTree(cwd: string): Promise<TreeSnapshot> {
-  if (insideState(path.resolve(cwd))) {
+export async function snapshotTree(given: string): Promise<TreeSnapshot> {
+  // Resolved once, so insideState's absolute comparison holds for a relative cwd.
+  const cwd = path.resolve(given);
+  if (insideState(cwd)) {
     return { method: "none", reason: "inside agy's own state directory; not fingerprinted" };
   }
   return (await gitSnapshot(cwd)) ?? (await scanSnapshot(cwd));
