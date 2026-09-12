@@ -23,6 +23,7 @@ describe("loadConfig", () => {
       warmSessions: true,
       warmMax: 2,
       warmIdleSec: 300,
+      readOnlyEnforcement: "auto",
     });
   });
 
@@ -91,6 +92,14 @@ describe("loadConfig", () => {
 
   it("prefers an explicit AGY_TIMEOUT over the ceiling", () => {
     expect(loadConfig({ AGY_TIMEOUT: "300", AGY_MAX_RUNTIME: "900" }).defaultTimeoutSec).toBe(300);
+  });
+
+  it("reads AGY_READ_ONLY_ENFORCEMENT and rejects an unknown value", () => {
+    expect(loadConfig({ AGY_READ_ONLY_ENFORCEMENT: "require" }).readOnlyEnforcement).toBe(
+      "require",
+    );
+    expect(loadConfig({ AGY_READ_ONLY_ENFORCEMENT: "off" }).readOnlyEnforcement).toBe("off");
+    expect(() => loadConfig({ AGY_READ_ONLY_ENFORCEMENT: "yes" })).toThrow(ConfigError);
   });
 
   it("reads AGY_ON_FAILURE=strict", () => {

@@ -39,6 +39,12 @@ export interface Config {
   warmSessions: boolean;
   warmMax: number;
   warmIdleSec: number;
+  /**
+   * Whether plan-mode runs are confined so agy cannot write inside their roots.
+   * `auto` confines where the platform can and watches elsewhere; `require`
+   * refuses a read-only run that cannot be confined; `off` only watches.
+   */
+  readOnlyEnforcement: "auto" | "require" | "off";
 }
 
 /**
@@ -138,6 +144,11 @@ export function parseRoots(raw: string | undefined, delimiter: string = path.del
     .filter((s) => s.length > 0);
 }
 
+function readOnlyEnforcement(raw: string | undefined): "auto" | "require" | "off" {
+  if (unset(raw)) return "auto";
+  return oneOf("AGY_READ_ONLY_ENFORCEMENT", raw as string, ["auto", "require", "off"] as const);
+}
+
 function onFailure(raw: string | undefined): "strict" | "fallback" {
   if (unset(raw)) return "fallback";
   return oneOf("AGY_ON_FAILURE", raw as string, ["strict", "fallback"] as const);
@@ -211,5 +222,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     warmSessions: bool("AGY_WARM_SESSIONS", env.AGY_WARM_SESSIONS, true),
     warmMax: positiveInt("AGY_WARM_MAX", env.AGY_WARM_MAX, 2),
     warmIdleSec: durationSec("AGY_WARM_IDLE_SEC", env.AGY_WARM_IDLE_SEC, 300),
+    readOnlyEnforcement: readOnlyEnforcement(env.AGY_READ_ONLY_ENFORCEMENT),
   };
 }

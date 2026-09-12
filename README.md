@@ -138,7 +138,7 @@ With `claude-agy-mcp`:
 | Model selection | none (agy default only)     | per-tool family selectors that follow new generations, with quota failover               |
 | Multi-turn      | stateless                   | session continuity — `follow_up` resumes agy conversations without resending context     |
 | Output safety   | unbounded                   | configurable truncation cap protects Claude's context                                    |
-| Sandbox         | no                          | per-tool privilege: read-only tools pinned to `--mode plan`, optional `--sandbox`        |
+| Sandbox         | no                          | read-only tools blocked from writing into the workspace on macOS, optional `--sandbox`   |
 | Honest results  | exit code only              | decides on agy's JSON envelope — reports auto-denied tool actions instead of hiding them |
 | Install         | uvx (Python)                | npx (Node) — zero install                                                                |
 
@@ -282,29 +282,30 @@ The ceiling is a resource cap, not a diagnosis. When it fires, the run still ret
 
 All optional, via environment variables:
 
-| Variable                   | Default                    | Description                                                                                                                                                                   |
-| -------------------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AGY_PATH`                 | `agy`                      | Path to the agy binary                                                                                                                                                        |
-| `AGY_MAX_RUNTIME`          | `3600`                     | Seconds; absolute runtime ceiling. The bridge never kills for inactivity — only cancellation, quota, or this                                                                  |
-| `AGY_TIMEOUT`              | `AGY_MAX_RUNTIME`          | Seconds; overrides the ceiling for every tool, passed as `--print-timeout`, enforced with a 15s kill grace                                                                    |
-| `AGY_TIMEOUT_<TOOL>`       | `AGY_MAX_RUNTIME`          | Seconds; overrides the ceiling for a single tool, e.g. `AGY_TIMEOUT_DEEP_SEARCH=900`. Wins over `AGY_TIMEOUT`                                                                 |
-| `AGY_MAX_OUTPUT_CHARS`     | `50000`                    | Truncation cap for tool output                                                                                                                                                |
-| `AGY_DEFAULT_MODEL`        | `gemini-flash@latest-high` | Appended to every chain as a last resort                                                                                                                                      |
-| `AGY_ASK_MODEL`            | `true`                     | Refuse to delegate until the user has chosen a model via `set_model` (asked once, saved per machine)                                                                          |
-| `AGY_EFFORT`               | agy's own default          | `low` \| `medium` \| `high` fallback tier; selects the sibling model at that tier (see Effort and tiers)                                                                      |
-| `AGY_SKIP_PERMISSIONS`     | `true`                     | Pass `--dangerously-skip-permissions` to agy                                                                                                                                  |
-| _(all boolean vars)_       | —                          | Accept `true/false`, `1/0`, `yes/no`, `on/off`, case-insensitive. An unrecognized value is a startup error, never a silent default                                            |
-| _(all numeric vars)_       | —                          | Plain decimal digits only (`1e3`, `0x10` and padded values are startup errors). Enum vars (`AGY_EFFORT`, `AGY_ON_FAILURE`) are case-insensitive                               |
-| `AGY_SANDBOX`              | `false`                    | Run agy with `--sandbox`                                                                                                                                                      |
-| `AGY_ON_FAILURE`           | `fallback`                 | `strict` appends an instruction to failed-tool errors telling the calling agent not to absorb the work itself                                                                 |
-| `AGY_MAX_CONCURRENCY`      | `2`                        | Most agy processes at once. Calls beyond it queue instead of stampeding the shared quota                                                                                      |
-| `AGY_BUDGET_TOKENS`        | unset                      | Hard stop once this many tokens have been spent since startup. Check spend with `agy_status`                                                                                  |
-| `AGY_ALLOWED_ROOTS`        | unset (unrestricted)       | Roots that `cwd`, `dirs`, `files` and derived workspace roots may not escape, symlinks followed; separated by `:` (`;` on Windows) or commas. Input validation, not a sandbox |
-| `AGY_REDACT`               | `true`                     | Scrub credential-shaped strings out of returned text before it reaches the caller's context                                                                                   |
-| `AGY_MAX_DELEGATION_DEPTH` | `1`                        | Refuse to delegate once this deep, so Claude → agy → this server → agy cannot loop                                                                                            |
-| `AGY_WARM_SESSIONS`        | `true`                     | Keep a resident agy process per conversation so `follow_up` skips the cold start                                                                                              |
-| `AGY_WARM_MAX`             | `2`                        | Most resident sessions to keep; the least recently used is evicted                                                                                                            |
-| `AGY_WARM_IDLE_SEC`        | `300`                      | Kill a resident session after this long idle                                                                                                                                  |
+| Variable                    | Default                    | Description                                                                                                                                                                            |
+| --------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AGY_PATH`                  | `agy`                      | Path to the agy binary                                                                                                                                                                 |
+| `AGY_MAX_RUNTIME`           | `3600`                     | Seconds; absolute runtime ceiling. The bridge never kills for inactivity — only cancellation, quota, or this                                                                           |
+| `AGY_TIMEOUT`               | `AGY_MAX_RUNTIME`          | Seconds; overrides the ceiling for every tool, passed as `--print-timeout`, enforced with a 15s kill grace                                                                             |
+| `AGY_TIMEOUT_<TOOL>`        | `AGY_MAX_RUNTIME`          | Seconds; overrides the ceiling for a single tool, e.g. `AGY_TIMEOUT_DEEP_SEARCH=900`. Wins over `AGY_TIMEOUT`                                                                          |
+| `AGY_MAX_OUTPUT_CHARS`      | `50000`                    | Truncation cap for tool output                                                                                                                                                         |
+| `AGY_DEFAULT_MODEL`         | `gemini-flash@latest-high` | Appended to every chain as a last resort                                                                                                                                               |
+| `AGY_ASK_MODEL`             | `true`                     | Refuse to delegate until the user has chosen a model via `set_model` (asked once, saved per machine)                                                                                   |
+| `AGY_EFFORT`                | agy's own default          | `low` \| `medium` \| `high` fallback tier; selects the sibling model at that tier (see Effort and tiers)                                                                               |
+| `AGY_SKIP_PERMISSIONS`      | `true`                     | Pass `--dangerously-skip-permissions` to agy                                                                                                                                           |
+| _(all boolean vars)_        | —                          | Accept `true/false`, `1/0`, `yes/no`, `on/off`, case-insensitive. An unrecognized value is a startup error, never a silent default                                                     |
+| _(all numeric vars)_        | —                          | Plain decimal digits only (`1e3`, `0x10` and padded values are startup errors). Enum vars (`AGY_EFFORT`, `AGY_ON_FAILURE`) are case-insensitive                                        |
+| `AGY_SANDBOX`               | `false`                    | Run agy with `--sandbox`                                                                                                                                                               |
+| `AGY_ON_FAILURE`            | `fallback`                 | `strict` appends an instruction to failed-tool errors telling the calling agent not to absorb the work itself                                                                          |
+| `AGY_MAX_CONCURRENCY`       | `2`                        | Most agy processes at once. Calls beyond it queue instead of stampeding the shared quota                                                                                               |
+| `AGY_BUDGET_TOKENS`         | unset                      | Hard stop once this many tokens have been spent since startup. Check spend with `agy_status`                                                                                           |
+| `AGY_ALLOWED_ROOTS`         | unset (unrestricted)       | Roots that `cwd`, `dirs`, `files` and derived workspace roots may not escape, symlinks followed; separated by `:` (`;` on Windows) or commas. Input validation, not a sandbox          |
+| `AGY_REDACT`                | `true`                     | Scrub credential-shaped strings out of returned text before it reaches the caller's context                                                                                            |
+| `AGY_MAX_DELEGATION_DEPTH`  | `1`                        | Refuse to delegate once this deep, so Claude → agy → this server → agy cannot loop                                                                                                     |
+| `AGY_WARM_SESSIONS`         | `true`                     | Keep a resident agy process per conversation so `follow_up` skips the cold start                                                                                                       |
+| `AGY_WARM_MAX`              | `2`                        | Most resident sessions to keep; the least recently used is evicted                                                                                                                     |
+| `AGY_WARM_IDLE_SEC`         | `300`                      | Kill a resident session after this long idle                                                                                                                                           |
+| `AGY_READ_ONLY_ENFORCEMENT` | `auto`                     | `auto` blocks read-only runs from writing into their roots where the platform can (macOS) and watches elsewhere; `require` refuses a read-only run it cannot block; `off` only watches |
 
 > [!WARNING]
 > **`AGY_SKIP_PERMISSIONS` is a real grant, and agy does not enforce read-only on top of it.** It
@@ -312,13 +313,25 @@ All optional, via environment variables:
 > `read_file` — and a single denial ends the run with an empty response, so a bridge without the grant
 > cannot read, search or fetch anything. The read-only tools pass `--mode plan`, but **verified
 > against agy 1.2.1 and again against 1.2.2: plan mode is advisory, with the permission bypass on or
-> off.** agy creates files in a `--mode plan` run either way. Treat every run as having the access of
-> the user running the bridge.
+> off.** agy creates files in a `--mode plan` run either way.
 >
-> Because it cannot be prevented, it is **detected**: the bridge fingerprints the working tree around
-> every plan-mode run and adds a `READ-ONLY VIOLATION` warning to the response header when the tree
-> changed. No warning means it looked and found nothing; a tree it could not fingerprint produces no
-> claim in either direction. The fingerprint covers `cwd` and every directory the call hands agy. In
+> **So on macOS the bridge enforces it.** Every plan-mode run, cold or resident, runs agy under the
+> kernel sandbox (`sandbox-exec`) with every write beneath `cwd` and each `dirs` root denied, for agy
+> and for every process it starts. Verified against agy 1.2.2: its file-writing tool and its shell
+> both fail with "Operation not permitted", while reads, git inspection and agy's own state under
+> the home directory keep working. The response header says `read-only: enforced`. The sandbox is
+> probed at startup; where it cannot run — Linux, or a bridge that is itself sandboxed — read-only
+> runs are watched instead, the header says `read-only: watched, not enforced` with the reason, and
+> `AGY_READ_ONLY_ENFORCEMENT=require` refuses them outright. `agy_status` reports which applies.
+>
+> The boundary is exactly the workspace roots. agy can still write anywhere else your user can, and
+> a process it gets launched outside its own process tree — through `open`, an app, or a launchd
+> job — is not sandboxed. That is why the watch stays on in both modes: the bridge fingerprints the
+> working tree around every plan-mode run. A tree that moved despite enforcement is reported as
+> `WORKING TREE CHANGED` (another writer, or an escape through such a process); a tree that moved
+> without enforcement is reported as `READ-ONLY VIOLATION`. No warning means it looked and found
+> nothing; a tree it could not fingerprint produces no claim in either direction. The fingerprint
+> covers `cwd` and every directory the call hands agy. In
 > a git repository it covers HEAD, the content and mode of every tracked change, the content of
 > every untracked file, and the mode, size and mtime of every ignored entry, ignored directories
 > walked the same way. A dependency or build tree at the repository top (`node_modules`, `.venv`,
@@ -329,9 +342,9 @@ All optional, via environment variables:
 > with 300 modified and 3,000 untracked files; two snapshots bracket each run.
 > Anything else writing to the tree while the run is live (an editor, a watcher, a parallel write
 > delegation) also moves it: the warning means the tree changed during the run, not proof of who
-> changed it. A plan run that wrote and then failed carries the warning in its error. That warning, not the tool's name and not the absence of a
-> **denied-actions** note, is the signal to trust — denied actions only ever populate when the grant
-> is off.
+> changed it. A plan run whose tree moved and then failed carries the warning in its error. The
+> header, not the tool's name and not the absence of a **denied-actions** note, is the signal to
+> trust — denied actions only ever populate when the grant is off.
 >
 > A restriction that cannot be enforced fails the call: if the installed agy does not support
 > `--mode` or `--sandbox`, a run needing either is refused rather than run with more authority than
@@ -342,7 +355,8 @@ All optional, via environment variables:
 > and `files` — including the workspace roots the bridge derives from them — before agy starts, so a
 > caller cannot point a delegation outside the roots you nominate. It does **not** confine the run:
 > under the permission grant agy has a shell and can reach anything the user running the bridge can.
-> For real containment, run the bridge somewhere contained.
+> The read-only sandbox above only blocks writes into a read-only run's own roots, and a run allowed
+> to write is not sandboxed at all. For real containment, run the bridge somewhere contained.
 
 ### Failure behavior
 
@@ -368,6 +382,16 @@ Deliberately not addressed, so they are not mistaken for oversights:
 - **`--disable-slash-commands` is best-effort.** Unlike `--mode plan` and `--sandbox`,
   it is dropped rather than refused when the installed agy does not advertise it, on
   the reasoning that a build without the flag most likely has no expansion to disable.
+- **Read-only is enforced on macOS only.** Linux has no equivalent the bridge can apply without
+  extra software, so there a read-only run is watched, not blocked. Set
+  `AGY_READ_ONLY_ENFORCEMENT=require` to refuse such runs instead.
+- **The macOS block is by path.** A file inside a root that already has a hard link outside
+  every root can be rewritten through that outside link. Creating such a link during the run
+  is blocked, and so is renaming any directory above a root to move the tree out from under
+  its rule. The working-tree fingerprint still reports a change made through an old link.
+- **A root that holds agy's state stays partly writable.** When a root contains `~/.gemini`,
+  that directory is exempt so agy can still run; a write there is not blocked, and the
+  fingerprint skips it. A root at or inside `~/.gemini` is watched, not enforced.
 - **A fan-out sharing one `session_id` runs sequentially.** agy holds a
   per-conversation lock, so concurrent turns against one conversation would corrupt it.
   Fan out across conversations for parallelism.

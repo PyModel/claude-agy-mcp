@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import type { Confinement } from "./confine.js";
 import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { rm, stat } from "node:fs/promises";
 import { StringDecoder } from "node:string_decoder";
@@ -43,6 +44,8 @@ export interface RunRequest {
   signal?: AbortSignal;
   /** Extra environment for the child, e.g. the delegation-depth counter. */
   env?: Record<string, string>;
+  /** Deny agy and its children every write beneath these roots. Needs `RunnerDeps.confinement`. */
+  confineTo?: string[];
   /** Called as agy streams; enables --output-format stream-json when supported. */
   onProgress?: (p: RunProgress) => void;
 }
@@ -112,6 +115,8 @@ export interface RunnerDeps {
    * flight when the bridge shuts down, since detached children outlive it.
    */
   track?: (proc: AgyProcess) => () => void;
+  /** How `RunRequest.confineTo` is carried out on this machine. */
+  confinement?: Confinement;
 }
 
 /** The most stdout kept per run. The envelope is printed last, so the head is what goes. */
@@ -443,6 +448,29 @@ function outputFormatFor(req: RunRequest, caps: Capabilities): "json" | "stream-
   return req.onProgress ? "stream-json" : "json";
 }
 
+/**
+ * The process to start for a run: agy itself, or agy under the write confinement
+ * the request asked for. A confinement that cannot be applied fails the call, the
+ * same rule `buildArgs` applies to a restricting flag agy lacks.
+ */
+export function commandFor(
+  confineTo: string[] | undefined,
+  agyPath: string,
+  args: string[],
+  confinement: Confinement | undefined,
+): { file: string; args: string[] } {
+  if (!confineTo) return { file: agyPath, args };
+  if (!confinement?.available) {
+    throw new AgyFailure(
+      "agy_error",
+      `This run asked to be confined against writes, but confinement is unavailable` +
+        `${confinement?.reason ? ` (${confinement.reason})` : ""}. Refusing rather than ` +
+        `running with more authority than requested.`,
+    );
+  }
+  return confinement.wrap(agyPath, args, confineTo);
+}
+
 export async function runAgy(
   req: RunRequest,
   cfg: Config,
@@ -476,9 +504,15 @@ export async function runAgy(
   let exited = false;
   let streamedText = "";
 
+  const command = commandFor(
+    req.confineTo,
+    cfg.agyPath,
+    buildArgs(req, cfg, { logPath, caps, outputFormat }),
+    deps.confinement,
+  );
   const finished = await new Promise<{ stdout: string; stderr: string; code: number | null }>(
     (resolve, reject) => {
-      child = spawnAgy(cfg.agyPath, buildArgs(req, cfg, { logPath, caps, outputFormat }), {
+      child = spawnAgy(command.file, command.args, {
         cwd: req.cwd,
         ...(req.env ? { env: req.env } : {}),
       });

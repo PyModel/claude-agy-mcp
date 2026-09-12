@@ -34,6 +34,7 @@ const exploding = (): ReturnType<typeof fakeAgy> => ({
     throw new Error("kaboom");
   },
   runs: [],
+  files: [],
   envs: [],
   kills: [],
   modelOf: () => undefined,
@@ -429,6 +430,13 @@ describe("createToolHandler", () => {
     expect(text).toContain("quota cooldowns: none");
     expect(text).toContain("adversarial_review: gemini-flash@latest-high");
     expect(agy.runs).toHaveLength(0);
+  });
+
+  it("says read-only runs are refused, not watched, under AGY_READ_ONLY_ENFORCEMENT=require", async () => {
+    const { handler } = handlerFor("agy_status", { readOnlyEnforcement: "require" });
+    const text = textOf(await handler({}));
+    expect(text).toContain("read-only runs: refused, they cannot be confined");
+    expect(text).not.toContain("watched");
   });
 
   it("strict mode marks a fan-out whose every leg failed, like any other failure", async () => {

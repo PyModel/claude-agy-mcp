@@ -2,6 +2,7 @@ import { writeFileSync } from "node:fs";
 import type { Capabilities } from "../src/capabilities.js";
 import { WANTED_FLAGS } from "../src/capabilities.js";
 import type { Config } from "../src/config.js";
+import type { Confinement } from "../src/confine.js";
 import { Delegator } from "../src/delegation.js";
 import { ModelRegistry } from "../src/models.js";
 import { CooldownRegistry, MemoryCooldownStore } from "../src/quota.js";
@@ -87,6 +88,8 @@ export interface FakeAgy {
   spawn: SpawnAgy;
   /** argv of every run, in order. */
   runs: string[][];
+  /** The executable of every run: agy, or the sandbox wrapping it. */
+  files: string[];
   /** The env each run was given, in order. */
   envs: (Record<string, string> | undefined)[];
   kills: string[];
@@ -121,10 +124,12 @@ function stdoutFor(opts: FakeAgyOptions): string {
  */
 export function fakeAgy(plan: FakeAgyOptions | FakeAgyPlan = {}): FakeAgy {
   const runs: string[][] = [];
+  const files: string[] = [];
   const envs: (Record<string, string> | undefined)[] = [];
   const kills: string[] = [];
 
-  const spawn: SpawnAgy = (_file, args, spawnOpts) => {
+  const spawn: SpawnAgy = (file, args, spawnOpts) => {
+    files.push(file);
     runs.push(args);
     envs.push(spawnOpts.env);
     const opts = typeof plan === "function" ? plan(args) : plan;
@@ -147,7 +152,7 @@ export function fakeAgy(plan: FakeAgyOptions | FakeAgyPlan = {}): FakeAgy {
     return process;
   };
 
-  return { spawn, runs, envs, kills, modelOf: (run) => valueOf(run, "--model") };
+  return { spawn, runs, files, envs, kills, modelOf: (run) => valueOf(run, "--model") };
 }
 
 /** Timing that keeps runner tests in the tens of milliseconds. */
@@ -173,6 +178,7 @@ export const testConfig: Config = {
   warmSessions: false,
   warmMax: 2,
   warmIdleSec: 300,
+  readOnlyEnforcement: "auto",
 };
 
 /** The model listing tests resolve chains against, in agy's real tab-separated shape. */
@@ -203,6 +209,7 @@ export interface DelegatorOptions {
   /** The environment the delegator reads AGY_DELEGATION_DEPTH from. */
   env?: Record<string, string | undefined>;
   now?: () => number;
+  confinement?: Confinement;
 }
 
 /** A Delegator wired to fakes, plus the config it was built with. */
@@ -215,6 +222,7 @@ export function makeDelegator(opts: DelegatorOptions = {}): { cfg: Config; deleg
     {
       spawn: opts.spawn,
       spawnSession: opts.spawnSession,
+      ...(opts.confinement ? { confinement: opts.confinement } : {}),
       timing: FAST_TIMING,
       cooldowns: new CooldownRegistry(new MemoryCooldownStore(), opts.now),
       // No real filesystem in unit tests: the read-only-violation watcher has

@@ -1,8 +1,10 @@
 import { spawn } from "node:child_process";
+import { resolve as resolvePath } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { Capabilities } from "./capabilities.js";
+import type { Confinement } from "./confine.js";
 import type { Config } from "./config.js";
-import { MAX_STDOUT_CHARS } from "./runner.js";
+import { commandFor, MAX_STDOUT_CHARS } from "./runner.js";
 import { parseStreamEvents, type AgyEnvelope, type AgyUsage } from "./envelope.js";
 
 /**
@@ -98,6 +100,11 @@ const spawnSessionProcess: SpawnSession = (file, args, opts) => {
 const MAX_SESSION_BUFFER = MAX_STDOUT_CHARS;
 
 /** The driver could not answer this turn; the caller should run cold instead. */
+/** Order and spelling of the roots do not change what a sandbox confines. */
+function confinementKey(roots: string[] | undefined): string {
+  return JSON.stringify([...new Set((roots ?? []).map((r) => resolvePath(r)))].sort());
+}
+
 export class WarmUnavailable extends Error {
   constructor(reason: string) {
     super(reason);
@@ -137,6 +144,8 @@ interface Session {
   key: string;
   /** The directory this process was started in; a turn elsewhere must not reuse it. */
   cwd: string;
+  /** The roots it is confined against, as one comparable string; empty when unconfined. */
+  confinedTo: string;
   proc: SessionProcess;
   buffer: string;
   alive: boolean;
@@ -162,6 +171,8 @@ export interface WarmDeps {
   /** Extra environment for every resident process, e.g. the delegation-depth counter. */
   env?: Record<string, string>;
   now?: () => number;
+  /** Carries out `TurnOptions.confineTo`. */
+  confinement?: Confinement;
 }
 
 export interface WarmStats {
@@ -174,6 +185,8 @@ export interface TurnOptions {
   timeoutMs: number;
   signal?: AbortSignal;
   onProgress?: (text: string) => void;
+  /** Roots the resident process must be denied writes beneath, fixed for its whole life. */
+  confineTo?: string[];
 }
 
 function usageDelta(now: AgyUsage, before: AgyUsage): AgyUsage {
@@ -231,10 +244,23 @@ export class WarmSessions {
     // SEC-M6. A resident process keeps the cwd and --add-dir it was started with.
     // Reusing it for a turn whose cwd is different runs that turn somewhere the
     // caller did not ask for and did not have containment-checked for this call.
-    if (existing && existing.cwd !== cwd) {
-      throw new WarmUnavailable("resident session belongs to a different working directory");
+    // A process keeps its sandbox for life, so a turn needing different
+    // confinement must not borrow one started under another. Either mismatch
+    // sends this turn cold, which leaves the resident's history behind, so an
+    // idle resident is dropped rather than reused by a later turn.
+    const confinedTo = confinementKey(opts.confineTo);
+    const mismatch = !existing
+      ? undefined
+      : resolvePath(existing.cwd) !== resolvePath(cwd)
+        ? "resident session belongs to a different working directory"
+        : existing.confinedTo !== confinedTo
+          ? "resident session was started with different write confinement"
+          : undefined;
+    if (existing && mismatch) {
+      if (!existing.busy) this.drop(existing, mismatch);
+      throw new WarmUnavailable(mismatch);
     }
-    const session = existing ?? this.start(conversationId, cwd);
+    const session = existing ?? this.start(conversationId, cwd, opts.confineTo);
     if (!session.alive) {
       this.drop(session, "process is gone");
       throw new WarmUnavailable("resident agy session had exited");
@@ -289,7 +315,7 @@ export class WarmSessions {
     return this.deps.now?.() ?? Date.now();
   }
 
-  private start(conversationId: string, cwd: string): Session {
+  private start(conversationId: string, cwd: string, confineTo?: string[]): Session {
     if (!this.evictIfFull()) {
       throw new WarmUnavailable(`all ${this.cfg.warmMax} resident sessions are busy`);
     }
@@ -313,7 +339,8 @@ export class WarmSessions {
     const spawnFn = this.deps.spawnSession ?? spawnSessionProcess;
     let proc: SessionProcess;
     try {
-      proc = spawnFn(this.cfg.agyPath, args, {
+      const command = commandFor(confineTo, this.cfg.agyPath, args, this.deps.confinement);
+      proc = spawnFn(command.file, command.args, {
         cwd,
         ...(this.deps.env ? { env: this.deps.env } : {}),
       });
@@ -324,6 +351,7 @@ export class WarmSessions {
     const session: Session = {
       key: conversationId,
       cwd,
+      confinedTo: confinementKey(confineTo),
       proc,
       buffer: "",
       alive: true,

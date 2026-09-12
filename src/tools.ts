@@ -95,15 +95,16 @@ type ToolSchema = z.ZodObject<z.ZodRawShape>;
 /**
  * How much authority a tool's runs ask for.
  *
- * `read-only` pins `--mode plan`. Read that as a request, not a guarantee:
+ * `read-only` pins `--mode plan`. On its own that is a request, not a guarantee:
  * plan mode is advisory with the permission bypass on or off, and it was
  * verified against agy 1.2.1 and 1.2.2 that a plan-mode run will still create
  * files. `denied_actions` only ever populates when the
  * permission grant is off, so its absence proves nothing either.
  *
- * The proof comes from outside agy: the bridge fingerprints the working tree
- * around every plan-mode run and reports `wroteInReadOnlyMode` when the tree
- * moved. That flag, not this type, is the evidence a caller should trust.
+ * The guarantee comes from outside agy: where the platform allows, the run is
+ * confined so writes into its roots fail (see confine.ts), and the working tree
+ * is fingerprinted around every plan-mode run either way. `readOnly` and
+ * `wroteInReadOnlyMode` on the result, not this type, are what a caller trusts.
  */
 export type Privilege = "read-only" | "caller-chooses";
 
