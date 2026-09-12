@@ -162,12 +162,14 @@ describe("WarmSessions", () => {
     warm.shutdown();
   });
 
-  it("asks the caller to run cold rather than failing when the process dies mid-turn", async () => {
+  it("reports a process that dies after the turn was sent as uncertain, not as run-cold", async () => {
+    // The prompt reached agy's stdin, so it may have run. A cold re-run could
+    // apply its effects a second time; the caller has to be told instead.
     const s = fakeSession();
     const warm = new WarmSessions(cfg, fullCaps, { spawnSession: s.spawnSession });
     const p = warm.turn("conv-1", "/repo", "q", TURN);
     s.die();
-    await expect(p).rejects.toThrow(WarmUnavailable);
+    await expect(p).rejects.toThrow(WarmTurnUncertain);
     expect(warm.stats().resident).toBe(0);
   });
 

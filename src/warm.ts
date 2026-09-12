@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import type { Capabilities } from "./capabilities.js";
 import type { Config } from "./config.js";
+import { MAX_STDOUT_CHARS } from "./runner.js";
 import { parseStreamEvents, type AgyEnvelope, type AgyUsage } from "./envelope.js";
 
 /**
@@ -50,6 +51,9 @@ const spawnSessionProcess: SpawnSession = (file, args, opts) => {
   child.stdin?.on("error", () => {});
   child.stdout?.on("error", () => {});
   child.stderr?.on("error", () => {});
+  // Nothing here needs the resident process's stderr, but an unread pipe fills
+  // and agy then blocks on its next write, mid-turn, until the turn times out.
+  child.stderr?.resume();
   return {
     write: (line) => {
       const stdin = child.stdin;
@@ -86,8 +90,12 @@ const spawnSessionProcess: SpawnSession = (file, args, opts) => {
   };
 };
 
-/** One turn's stream-JSON line cannot legitimately exceed this. */
-const MAX_SESSION_BUFFER = 8 * 1024 * 1024;
+/**
+ * One turn's stream-JSON line cannot legitimately exceed what a cold run would
+ * accept as its whole output; a smaller cap here failed large answers warm that
+ * succeed cold.
+ */
+const MAX_SESSION_BUFFER = MAX_STDOUT_CHARS;
 
 /** The driver could not answer this turn; the caller should run cold instead. */
 export class WarmUnavailable extends Error {
@@ -303,13 +311,20 @@ export class WarmSessions {
     if (this.caps.has("--mode")) args.push("--mode", "plan");
 
     const spawnFn = this.deps.spawnSession ?? spawnSessionProcess;
+    let proc: SessionProcess;
+    try {
+      proc = spawnFn(this.cfg.agyPath, args, {
+        cwd,
+        ...(this.deps.env ? { env: this.deps.env } : {}),
+      });
+    } catch (err) {
+      // Nothing started, so nothing ran: a cold run is the right fallback.
+      throw new WarmUnavailable(`could not start a resident session: ${(err as Error).message}`);
+    }
     const session: Session = {
       key: conversationId,
       cwd,
-      proc: spawnFn(this.cfg.agyPath, args, {
-        cwd,
-        ...(this.deps.env ? { env: this.deps.env } : {}),
-      }),
+      proc,
       buffer: "",
       alive: true,
       busy: false,
@@ -325,8 +340,13 @@ export class WarmSessions {
     session.proc.onData((chunk) => this.consume(session, chunk));
     session.proc.onExit(() => {
       session.alive = false;
-      session.pending?.reject(new WarmUnavailable("resident agy session exited mid-turn"));
-      this.sessions.delete(session.key);
+      // Sent means agy may have run it: that is uncertain, never "run it cold".
+      session.pending?.reject(
+        session.pending.sent
+          ? new WarmTurnUncertain("process exited mid-turn")
+          : new WarmUnavailable("resident agy session exited mid-turn"),
+      );
+      this.forget(session);
     });
     this.sessions.set(conversationId, session);
     this.arm(session);
@@ -347,7 +367,11 @@ export class WarmSessions {
     for (const ev of events) {
       if (ev.kind === "step" && session.pending) {
         session.pending.text += ev.textDelta;
-        session.pending.onProgress?.(session.pending.text);
+        try {
+          session.pending.onProgress?.(session.pending.text);
+        } catch {
+          // This runs in a stream 'data' handler, where a throw crashes the bridge.
+        }
       }
       if (ev.kind === "result") session.pending?.resolve(ev.envelope);
     }
@@ -374,10 +398,19 @@ export class WarmSessions {
     return true;
   }
 
+  /**
+   * Removes `session` from the map only if it is still the one registered. A
+   * dropped process closes late; deleting by key then removed its replacement,
+   * which shutdown could no longer find and so never killed.
+   */
+  private forget(session: Session): void {
+    if (this.sessions.get(session.key) === session) this.sessions.delete(session.key);
+  }
+
   private drop(session: Session, why: string, hard = false): void {
     if (session.idleTimer) clearTimeout(session.idleTimer);
     session.alive = false;
-    this.sessions.delete(session.key);
+    this.forget(session);
     session.pending?.reject(
       session.pending.sent
         ? new WarmTurnUncertain(why)

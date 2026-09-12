@@ -168,7 +168,12 @@ What that means in practice, and what the bridge does about it:
 - **So the bridge watches instead of promising.** It fingerprints the working tree around every
   plan-mode run and adds a `READ-ONLY VIOLATION` warning to the header when the tree changed. Absence
   of the warning means it looked and found nothing; a run it could not fingerprint says nothing at all
-  rather than claiming the tree is clean.
+  rather than claiming the tree is clean. Files git ignores are outside the fingerprint, and any other
+  writer during the run moves it too.
+- **A write run that may have taken effect is never repeated for you.** After a network error or a
+  429, a `write: true` run is retried or failed over only when the tree is provably unchanged.
+  Otherwise the call fails with `Not retried` or `Not failed over`: inspect the tree, then re-dispatch
+  deliberately.
 - **The denied-actions note only appears when the grant is off.** With the default grant you will not
   see one, so its absence proves nothing. The violation warning is the signal to trust.
 - **A restriction that cannot be enforced fails the call.** If the installed agy does not support

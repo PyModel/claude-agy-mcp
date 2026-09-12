@@ -1,4 +1,4 @@
-import type { AgyEnvelope } from "./envelope.js";
+import type { AgyEnvelope, AgyUsage } from "./envelope.js";
 import { QUOTA_RE } from "./quota.js";
 
 /**
@@ -36,19 +36,25 @@ export function policyFor(kind: FailureKind): FailurePolicy {
   return POLICY[kind];
 }
 
+/**
+ * The first matching pattern wins, so order is policy. Quota comes before auth
+ * and network: "PERMISSION_DENIED: RESOURCE_EXHAUSTED" is an exhausted model
+ * that should fail over, and a 429 that also mentions a reset connection must
+ * not retry the exhausted one. Status codes count only beside a status word, so
+ * a source location like "foo.ts:401:3" is not an auth failure. A bare EOF is a
+ * network blip only where Go puts one, at the end of a read ("…:443: EOF"); a
+ * parser's "unexpected EOF" is not worth repeating.
+ */
 const PATTERNS: [FailureKind, RegExp][] = [
   ["invalid_model", /invalid model selection|is not recognized as a known model/i],
-  [
-    "unauthenticated",
-    /unauthenticated|not logged in|please (re-?)?login|invalid credentials|PERMISSION_DENIED|UNAUTHENTICATED|\b401\b|\bauth\w*\s+(has\s+)?expired|\btoken\s+(has\s+)?expired|re-authenticate/i,
-  ],
-  // Quota precedes network on purpose: a 429 whose message also mentions a
-  // reset connection must fail over to another model, not retry the exhausted
-  // one. The first matching pattern wins.
   ["quota", QUOTA_RE],
   [
+    "unauthenticated",
+    /unauthenticated|not logged in|please (re-?)?login|invalid credentials|PERMISSION_DENIED|UNAUTHENTICATED|\b(?:code|status|HTTP)[\s:=]*401\b|\b401 Unauthorized\b|\bauth\w*\s+(has\s+)?expired|\btoken\s+(has\s+)?expired|re-authenticate/i,
+  ],
+  [
     "network",
-    /dial tcp|no such host|connection refused|connection reset|network is unreachable|i\/o timeout|TLS handshake|EOF\b|ENOTFOUND|ECONNRESET|ETIMEDOUT/i,
+    /dial tcp|no such host|connection refused|connection reset|network is unreachable|i\/o timeout|TLS handshake|:\s*EOF\s*$|ENOTFOUND|ECONNRESET|ETIMEDOUT/im,
   ],
 ];
 
@@ -99,7 +105,22 @@ export function classifyRun(input: ClassifyInput): { kind: FailureKind; message:
   return null;
 }
 
+/**
+ * The call itself was unusable: a path outside the roots, a prompt agy cannot
+ * receive, a working directory that does not exist. Nothing was delegated, so
+ * this is the caller's to fix, not a delegation failure to escalate.
+ */
+export class InvalidRequestError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidRequestError";
+  }
+}
+
 export class AgyFailure extends Error {
+  /** Tokens the failed run still spent, when agy reported them. */
+  usage?: AgyUsage;
+
   constructor(
     readonly kind: FailureKind,
     message: string,

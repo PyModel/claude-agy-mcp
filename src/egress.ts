@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
 import path from "node:path";
+import { InvalidRequestError } from "./failure.js";
 
 /**
  * What may leave this machine and what may come back.
@@ -9,7 +10,7 @@ import path from "node:path";
  * handed to agy, and returned text is scrubbed before it is handed back.
  */
 
-export class PathNotAllowedError extends Error {
+export class PathNotAllowedError extends InvalidRequestError {
   constructor(
     readonly offending: string,
     roots: string[],
@@ -25,27 +26,31 @@ export class PathNotAllowedError extends Error {
 
 function within(candidate: string, root: string): boolean {
   const rel = path.relative(root, candidate);
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  // `..foo` is a child with an odd name; only a `..` segment climbs out.
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }
 
 /**
- * The path with symlinks followed, so a link inside a root that points outside
- * it is judged by where it leads. A path that does not exist yet is resolved
- * through its nearest existing ancestor, which is where any link would be.
+ * The path the operating system will actually reach, symlinks followed.
+ *
+ * `path.resolve` collapses `link/..` lexically, before any link is followed, so
+ * `root/link/..` was judged to be `root` while the OS went to the link target's
+ * parent. The existing part of the path is therefore resolved physically, by
+ * `realpath(3)`, exactly as given; only a tail that does not exist yet — where
+ * no link can be — is joined on lexically.
  */
 export function canonical(p: string): string {
-  let probe = path.resolve(p);
-  let rest = "";
-  for (;;) {
+  const absolute = path.isAbsolute(p) ? p : `${process.cwd()}${path.sep}${p}`;
+  const parts = absolute.split(path.sep);
+  for (let cut = parts.length; cut > 0; cut--) {
+    const head = parts.slice(0, cut).join(path.sep) || path.sep;
     try {
-      return path.join(realpathSync(probe), rest);
+      return path.resolve(realpathSync.native(head), ...parts.slice(cut));
     } catch {
-      const parent = path.dirname(probe);
-      if (parent === probe) return path.join(probe, rest);
-      rest = path.join(path.basename(probe), rest);
-      probe = parent;
+      // does not exist yet; try its parent
     }
   }
+  return path.resolve(absolute);
 }
 
 /**
@@ -90,8 +95,13 @@ const KNOWN_SECRETS: [string, RegExp][] = [
 const URL_CREDENTIALS = /\b([a-z][a-z0-9+.-]*:\/\/)([^\s/:@]+):([^\s/@]+)@/gi;
 
 /** `SOMETHING_SECRET=<value>` / `"api_key": "<value>"` with a long-enough value. */
+/**
+ * The identifier runs are bounded: unbounded `[A-Za-z0-9_]*` on both sides of
+ * the keyword backtracks quadratically, and one long run of "TOKENTOKEN…" in a
+ * model answer took minutes to scan.
+ */
 const ASSIGNED_SECRET =
-  /\b([A-Za-z_][A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|APIKEY|API_KEY|ACCESS_KEY|PRIVATE_KEY)[A-Za-z0-9_]*)(\s*[:=]\s*"?)([^\s"']{8,})/gi;
+  /\b([A-Za-z_][A-Za-z0-9_]{0,48}?(?:SECRET|TOKEN|PASSWORD|PASSWD|APIKEY|API_KEY|ACCESS_KEY|PRIVATE_KEY)[A-Za-z0-9_]{0,48})(\s*[:=]\s*"?)([^\s"']{8,})/gi;
 
 export interface Redaction {
   text: string;

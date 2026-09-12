@@ -332,45 +332,48 @@ describe("Delegator guards", () => {
 describe("Delegator warm sessions", () => {
   /** A resident agy that answers each written turn with a canned response. */
   function residentAgy(
-    behaviour: "answers" | "dies" | "stalls" = "answers",
+    behaviour: "answers" | "dies" | "stalls" | "unstartable" = "answers",
     reportedId = "conv-1",
   ) {
     const written: string[] = [];
     let emit: (chunk: string) => void = () => {};
     let exit: () => void = () => {};
     const envs: (Record<string, string> | undefined)[] = [];
-    const spawnSession = (_f: string, _a: string[], opts: { env?: Record<string, string> }) => ({
-      write: (line: string) => {
-        written.push(line);
-        envs.push(opts.env);
-        if (behaviour === "dies") queueMicrotask(() => exit());
-        else if (behaviour === "stalls") return;
-        else
-          queueMicrotask(() =>
-            emit(
-              `${JSON.stringify({
-                event: "result",
-                result: {
-                  conversation_id: reportedId,
-                  status: "SUCCESS",
-                  response: "warm answer",
-                  num_turns: 2,
-                  usage: {
-                    input_tokens: 1,
-                    output_tokens: 1,
-                    thinking_tokens: 0,
-                    cache_read_tokens: 0,
-                    total_tokens: 3,
+    const spawnSession = (_f: string, _a: string[], opts: { env?: Record<string, string> }) => {
+      if (behaviour === "unstartable") throw new Error("spawn EAGAIN");
+      return {
+        write: (line: string) => {
+          written.push(line);
+          envs.push(opts.env);
+          if (behaviour === "dies") queueMicrotask(() => exit());
+          else if (behaviour === "stalls") return;
+          else
+            queueMicrotask(() =>
+              emit(
+                `${JSON.stringify({
+                  event: "result",
+                  result: {
+                    conversation_id: reportedId,
+                    status: "SUCCESS",
+                    response: "warm answer",
+                    num_turns: 2,
+                    usage: {
+                      input_tokens: 1,
+                      output_tokens: 1,
+                      thinking_tokens: 0,
+                      cache_read_tokens: 0,
+                      total_tokens: 3,
+                    },
                   },
-                },
-              })}\n`,
-            ),
-          );
-      },
-      onData: (cb: (c: string) => void) => (emit = cb),
-      onExit: (cb: () => void) => (exit = cb),
-      kill: () => {},
-    });
+                })}\n`,
+              ),
+            );
+        },
+        onData: (cb: (c: string) => void) => (emit = cb),
+        onExit: (cb: () => void) => (exit = cb),
+        kill: () => {},
+      };
+    };
     return { spawnSession, written, envs };
   }
 
@@ -414,9 +417,44 @@ describe("Delegator warm sessions", () => {
     delegator.shutdown();
   });
 
-  it("falls back to a cold run, and says so, when the resident process dies", async () => {
+  it("re-runs cold a follow-up whose resident process died after receiving it, when the tree is unchanged", async () => {
+    // Warm turns are plan mode. With the tree provably untouched, a cold re-run
+    // cannot repeat an effect, so the caller still gets an answer.
     const agy = agyWhere();
-    const resident = residentAgy("dies");
+    const delegator = delegatorFor(
+      agy,
+      { warmSessions: true },
+      {
+        spawnSession: residentAgy("dies").spawnSession,
+        snapshot: async () => ({ method: "scan" as const, digest: "same" }),
+      },
+    );
+    const d = await delegator.run(followUp());
+    expect(d.output).toBe("the answer");
+    expect(d.attempts[0]).toMatch(/died after the turn was sent/);
+    expect(agy.runs).toHaveLength(1);
+    delegator.shutdown();
+  });
+
+  it("reports, rather than re-runs, a follow-up whose resident process died after the tree moved", async () => {
+    let n = 0;
+    const agy = agyWhere();
+    const delegator = delegatorFor(
+      agy,
+      { warmSessions: true },
+      {
+        spawnSession: residentAgy("dies").spawnSession,
+        snapshot: async () => ({ method: "scan" as const, digest: `d${n++}` }),
+      },
+    );
+    await expect(delegator.run(followUp())).rejects.toThrow(/may or may not have run/);
+    expect(agy.runs).toHaveLength(0);
+    delegator.shutdown();
+  });
+
+  it("falls back to a cold run, and says so, when no resident process can start", async () => {
+    const agy = agyWhere();
+    const resident = residentAgy("unstartable");
     const delegator = delegatorFor(
       agy,
       { warmSessions: true },

@@ -117,10 +117,11 @@ describe("CooldownRegistry over a file store", () => {
     try {
       let now = 0;
       const reg = new CooldownRegistry(new FileCooldownStore(dir), () => now);
-      reg.set("Old", 10);
-      now = 20_000;
-      reg.set("New", 10);
-      expect(new FileCooldownStore(dir).load()).toEqual({ New: 30_000 });
+      // Durations sit above the registry's one-minute floor.
+      reg.set("Old", 60);
+      now = 120_000;
+      reg.set("New", 60);
+      expect(new FileCooldownStore(dir).load()).toEqual({ New: 180_000 });
     } finally {
       cleanup();
     }

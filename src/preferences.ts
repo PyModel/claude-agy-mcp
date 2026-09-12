@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -59,9 +60,16 @@ export class FilePreferenceStore implements PreferenceStore {
 
   save(pref: ModelPreference | null): void {
     mkdirSync(path.dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(pref ?? {}, null, 2), "utf8");
-    renameSync(tmp, this.file);
+    // Unique per write: two saves in one process shared a temp name and could
+    // rename each other's half-written file into place.
+    const tmp = `${this.file}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(tmp, JSON.stringify(pref ?? {}, null, 2), "utf8");
+      renameSync(tmp, this.file);
+    } catch (err) {
+      rmSync(tmp, { force: true });
+      throw err;
+    }
   }
 }
 

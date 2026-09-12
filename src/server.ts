@@ -5,8 +5,15 @@ import { probeCapabilities, type Capabilities } from "./capabilities.js";
 import { loadConfig, timeoutFor, type Config } from "./config.js";
 import { FileCooldownStore } from "./cooldown-store.js";
 import { FilePreferenceStore } from "./preferences.js";
-import { Delegator, ModelNotChosenError, type Delegation } from "./delegation.js";
+import {
+  Delegator,
+  ModelNotChosenError,
+  READ_ONLY_VIOLATION,
+  type Delegation,
+} from "./delegation.js";
 import { redact } from "./egress.js";
+import { InvalidRequestError } from "./failure.js";
+import { removeLogDir, sweepStaleLogs } from "./runner.js";
 import { ModelRegistry, listModels } from "./models.js";
 import { CooldownRegistry } from "./quota.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
@@ -95,13 +102,7 @@ export function renderDelegation(d: Delegation, timeoutSec: number, nonce: strin
   }
   const denied = deniedNote(d);
   if (denied) warnings.push(denied);
-  if (d.wroteInReadOnlyMode) {
-    warnings.push(
-      `READ-ONLY VIOLATION — this call ran in plan mode, and the working tree changed anyway. ` +
-        `agy does not enforce plan mode while permissions are skipped (AGY_SKIP_PERMISSIONS), ` +
-        `so treat the run as having had write access: inspect the tree before trusting it.`,
-    );
-  }
+  if (d.wroteInReadOnlyMode) warnings.push(READ_ONLY_VIOLATION);
 
   if (d.continuation && !d.continuation.resumed) {
     warnings.push(
@@ -306,12 +307,18 @@ export function createToolHandler(
   elicitFor: (extra?: HandlerExtra) => Elicit | undefined = () => undefined,
 ): (args: Record<string, unknown>, extra?: HandlerExtra) => Promise<ToolResponse> {
   const timeoutSec = timeoutFor(cfg, tool.name);
-  const failed = (text: string): ToolResponse => ({
+  /**
+   * `delegationFailed` is false for a call that was never delegated because the
+   * call itself was unusable. Strict mode's "do not do this work yourself"
+   * belongs to a failed delegation; on a bad path or argument it told the agent
+   * to give up on work it only had to ask for correctly.
+   */
+  const failed = (text: string, delegationFailed = true): ToolResponse => ({
     content: [
       {
         type: "text",
         text:
-          cfg.onFailure === "strict"
+          cfg.onFailure === "strict" && delegationFailed
             ? text +
               "\n\n[claude-agy-mcp strict mode] Delegation failed. Do NOT perform this work yourself " +
               "in the main context — report the failure to the user and let them decide how to proceed."
@@ -376,9 +383,14 @@ export function createToolHandler(
       };
 
       if (tool.kind === "fanout") {
-        const results = await gated(() => delegator.runMany(base, fanoutLegs(args)));
+        const modelsChosen = Array.isArray(args.models) && args.models.length > 0;
+        const results = await gated(() =>
+          delegator.runMany(base, fanoutLegs(args), { modelsChosen }),
+        );
         const text = renderFanout(results, timeoutSec, nonce);
-        if (results.every((r) => r.error)) return failed(text);
+        // A leg that timed out answered with a fragment; if that is all there
+        // is, the fan-out failed, just as a single timed-out delegation does.
+        if (results.every((r) => r.error || r.delegation?.timedOut)) return failed(text);
         return { content: [{ type: "text", text }] };
       }
 
@@ -393,13 +405,16 @@ export function createToolHandler(
       // Error text is a return path like any other: AgyFailure carries agy's
       // stderr and the envelope's error string through verbatim.
       const msg = (err as Error).message;
-      return failed(cfg.redact ? redact(msg).text : msg);
+      const invalid = err instanceof InvalidRequestError || err instanceof z.ZodError;
+      return failed(cfg.redact ? redact(msg).text : msg, !invalid);
     }
   };
 }
 
 export async function createServer(): Promise<McpServer> {
   const cfg = loadConfig();
+  // Logs a crashed bridge left behind hold prompt text; clear them before adding more.
+  sweepStaleLogs();
   const caps = await probeCapabilities(cfg.agyPath);
   // A pre-flight failure here is the difference between "every call fails with a
   // confusing argument error" and one clear line before the first call.
@@ -463,7 +478,10 @@ export function buildServer(cfg: Config, caps: Capabilities): McpServer {
   // Resident agy children are spawned detached and with permissions skipped, so
   // nothing reaps them if this process just exits. `shutdown()` existed but was
   // never called, which is why a bridge restart left agy processes behind.
-  installShutdown(() => delegator.shutdown());
+  installShutdown(() => {
+    delegator.shutdown();
+    removeLogDir();
+  });
 
   const server = new McpServer({ name: "claude-agy-mcp", version: VERSION });
   // Client capabilities are only known after the handshake, so look them up per

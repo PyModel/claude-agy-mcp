@@ -55,7 +55,13 @@ when the tree changed.
 
 If you see that warning, the run wrote something despite being asked not to: inspect
 the tree before trusting the answer. No warning means the bridge looked and found
-nothing. A tree it could not fingerprint produces no claim in either direction.
+nothing. A tree it could not fingerprint produces no claim in either direction. The
+fingerprint does not see files git ignores, and anything else writing to the tree during
+the run moves it too, so the warning means "the tree changed while it ran".
+
+A failed call that says `Not retried` or `Not failed over` was a run that may already
+have taken effect. Inspect the tree before calling again; the bridge refused to repeat
+it so the effect would not happen twice.
 
 The absence of a denied-actions note proves nothing on its own, because denied actions
 only ever populate when the permission bypass is off.

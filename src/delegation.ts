@@ -2,7 +2,7 @@ import type { Capabilities } from "./capabilities.js";
 import { Admission } from "./concurrency.js";
 import { delegationDepth, type Config } from "./config.js";
 import { assertWithinRoots, redact, redactDeep } from "./egress.js";
-import { snapshotTree, treeChanged, type TreeSnapshot } from "./worktree.js";
+import { combineSnapshots, snapshotTree, treeChanged, type TreeSnapshot } from "./worktree.js";
 import { EMPTY_USAGE, type AgyUsage, type DeniedAction } from "./envelope.js";
 import { AgyFailure } from "./failure.js";
 import { resolveEntry, type Effort, type ModelInfo, type ModelRegistry } from "./models.js";
@@ -12,10 +12,23 @@ import {
   type PreferenceStore,
 } from "./preferences.js";
 import { CooldownRegistry, QuotaError } from "./quota.js";
-import { runAgy, type RunnerDeps, type RunProgress, truncate } from "./runner.js";
+import {
+  assertPromptIsSendable,
+  runAgy,
+  type AgyProcess,
+  type RunnerDeps,
+  type RunProgress,
+  truncate,
+} from "./runner.js";
 import { modeFor, type ToolDef } from "./tools.js";
 import { UsageLedger } from "./usage.js";
-import { WarmSessions, WarmTimeout, WarmUnavailable, type WarmDeps } from "./warm.js";
+import {
+  WarmSessions,
+  WarmTimeout,
+  WarmTurnUncertain,
+  WarmUnavailable,
+  type WarmDeps,
+} from "./warm.js";
 
 export interface DelegationRequest {
   tool: ToolDef;
@@ -130,6 +143,30 @@ interface Route {
   note?: string;
 }
 
+/** Checks, after a failure, whether running the same call again is safe. */
+type MayRepeat = () => Promise<boolean>;
+
+/**
+ * A failed run was not retried or failed over, because it may already have
+ * taken effect. Re-running a write that half-happened applies it twice.
+ */
+export class NotRepeatedError extends Error {
+  constructor(cause: Error, what: "retried" | "failed over to the next model") {
+    super(
+      `${cause.message}\n\nNot ${what}: the working tree changed while this run was live, or ` +
+        `could not be fingerprinted for a run allowed to write, so it may already have taken ` +
+        `effect and repeating it could apply that effect twice. Inspect the tree, then call again.`,
+    );
+    this.name = "NotRepeatedError";
+  }
+}
+
+/** The one wording of the read-only warning, for headers and for errors alike. */
+export const READ_ONLY_VIOLATION =
+  "READ-ONLY VIOLATION — this call ran in plan mode, and the working tree changed while it ran. " +
+  "agy does not enforce plan mode while permissions are skipped (AGY_SKIP_PERMISSIONS), so " +
+  "treat the run as having had write access: inspect the tree before trusting it.";
+
 export class DelegationDepthError extends Error {
   constructor(depth: number, max: number) {
     super(
@@ -156,6 +193,8 @@ export class Delegator {
   private readonly warm: WarmSessions;
   private readonly prefs: PreferenceStore;
   private readonly depth: number;
+  /** Cold agy processes still running, so shutdown can reap what it started. */
+  private readonly live = new Set<AgyProcess>();
 
   constructor(
     private readonly cfg: Config,
@@ -234,6 +273,15 @@ export class Delegator {
     model: string | undefined,
     effort: Effort | undefined,
   ): Promise<ModelPreference> {
+    // A choice that cannot be checked is not saved. Stored unverified, a
+    // misspelt name was later dropped from every chain without a word, while
+    // the status tool kept reporting it as the model in charge.
+    if (!(await this.models.available())) {
+      throw new Error(
+        "set_model could not verify the model: `agy models` failed, so nothing was saved. " +
+          "Check that agy is installed and signed in, then call set_model again.",
+      );
+    }
     if (!model) {
       const fallback = await this.defaultChoice();
       if (!fallback) {
@@ -257,8 +305,19 @@ export class Delegator {
     return pref;
   }
 
+  /**
+   * Kills everything this delegator started. Cold runs are detached process
+   * groups running with permissions skipped, so the bridge's own exit does not
+   * stop them; without this they ran on for up to AGY_TIMEOUT after the client
+   * was gone. Synchronous, because the exit path cannot wait.
+   */
   shutdown(): void {
     this.warm.shutdown();
+    for (const proc of this.live) {
+      proc.kill("SIGTERM");
+      proc.kill("SIGKILL");
+    }
+    this.live.clear();
   }
 
   /** The environment a child agy inherits, carrying the recursion counter. */
@@ -297,6 +356,9 @@ export class Delegator {
   async run(req: DelegationRequest): Promise<Delegation> {
     this.assertMayDelegate(req);
     const prompt = req.tool.buildPrompt(req.args, req.cwd);
+    // Before the model gate, the queue and the fingerprint: a prompt agy can
+    // never receive should cost nothing.
+    assertPromptIsSendable(prompt);
     const pref = this.prefs.load();
     if (this.cfg.askModel && !pref && !req.model && !req.conversationId) {
       throw new ModelNotChosenError(await this.defaultChoice(), await this.models.available());
@@ -307,7 +369,14 @@ export class Delegator {
     // a write run changing the tree is the point of it. Both fingerprints are
     // taken inside the admission gate, so this filesystem work is bounded by
     // AGY_MAX_CONCURRENCY like everything else and cannot stampede a big tree.
-    const watch = modeFor(req.tool, req.write) === "plan";
+    //
+    // Every root agy is given is fingerprinted, not only `cwd`: a write into a
+    // `dirs` entry is just as much a write. The same fingerprint decides whether
+    // a failed run may be repeated, so it is taken for write runs too.
+    const plan = modeFor(req.tool, req.write) === "plan";
+    const roots = [req.cwd, ...this.dirsFor(req)];
+    const snap = this.deps.snapshot ?? snapshotTree;
+    const fingerprint = async () => combineSnapshots(await Promise.all(roots.map((r) => snap(r))));
     return this.admission.run(
       req.conversationId,
       async () => {
@@ -316,11 +385,27 @@ export class Delegator {
         // pass the pre-flight check while spend was still zero and overshoot was
         // bounded by leg count rather than by the limit.
         this.ledger.assertWithinBudget();
-        const snap = this.deps.snapshot ?? snapshotTree;
-        const before = watch ? await snap(req.cwd) : undefined;
-        const result = await this.attemptWithSkewRetry(req, prompt, route);
-        if (!before) return result;
-        const wrote = treeChanged(before, await snap(req.cwd));
+        const before = await fingerprint();
+        // A repeat is safe only when the tree provably did not move. Unknown is
+        // accepted for a plan run, whose contract is read-only; a run that may
+        // write gets no benefit of the doubt.
+        const mayRepeat: MayRepeat = async () => {
+          const changed = treeChanged(before, await fingerprint());
+          return changed === false || (changed === undefined && plan);
+        };
+        let result: Delegation;
+        try {
+          result = await this.attemptWithSkewRetry(req, prompt, route, mayRepeat);
+        } catch (err) {
+          // A plan run that wrote and then failed still wrote; the failure must
+          // not swallow the evidence.
+          if (plan && err instanceof Error && treeChanged(before, await fingerprint())) {
+            err.message = `${err.message}\n\n${READ_ONLY_VIOLATION}`;
+          }
+          throw err;
+        }
+        if (!plan) return result;
+        const wrote = treeChanged(before, await fingerprint());
         return wrote === undefined ? result : { ...result, wroteInReadOnlyMode: wrote };
       },
       req.signal,
@@ -424,18 +509,26 @@ export class Delegator {
     req: DelegationRequest,
     prompt: string,
     route: Route,
+    mayRepeat: MayRepeat,
   ): Promise<Delegation> {
     try {
-      return await this.attempt(req, prompt, route);
+      return await this.attempt(req, prompt, route, mayRepeat);
     } catch (err) {
+      // agy rejects an unknown model before running anything, so this repeat
+      // needs no tree check.
       if (!(err instanceof AgyFailure) || err.kind !== "invalid_model") throw err;
       this.models.invalidate();
       const fresh = await this.routeFor(req, this.prefs.load());
-      return this.attempt(req, prompt, fresh);
+      return this.attempt(req, prompt, fresh, mayRepeat);
     }
   }
 
-  private async attempt(req: DelegationRequest, prompt: string, route: Route): Promise<Delegation> {
+  private async attempt(
+    req: DelegationRequest,
+    prompt: string,
+    route: Route,
+    mayRepeat: MayRepeat,
+  ): Promise<Delegation> {
     const attempts: string[] = [];
 
     // A follow-up on a live conversation is the case a resident process is for.
@@ -469,6 +562,13 @@ export class Delegator {
             warm: true,
           });
         }
+        // The turn ran; an empty answer does not mean it did nothing.
+        if (!(await mayRepeat())) {
+          throw new NotRepeatedError(
+            new Error("The resident agy session returned no answer."),
+            "retried",
+          );
+        }
         attempts.push("warm session returned no answer; retried with a fresh agy process");
       } catch (err) {
         if (err instanceof WarmTimeout) {
@@ -483,36 +583,49 @@ export class Delegator {
             warm: true,
           });
         }
-        if (!(err instanceof WarmUnavailable)) throw err;
-        attempts.push(`warm session unavailable (${err.message}); ran a fresh agy process`);
+        if (err instanceof WarmTurnUncertain) {
+          // The resident process died after agy received the turn. Warm turns
+          // are plan-mode only, so re-running cold is safe exactly when the
+          // tree shows nothing happened; otherwise the caller has to decide.
+          if (!(await mayRepeat())) throw err;
+          attempts.push(
+            "warm session died after the turn was sent and the tree is unchanged; ran a fresh agy process",
+          );
+        } else if (err instanceof WarmUnavailable) {
+          attempts.push(`warm session unavailable (${err.message}); ran a fresh agy process`);
+        } else {
+          throw err;
+        }
       }
     }
 
-    for (const { model, effort } of route.candidates) {
-      if (model && this.cooldowns.cooling(model)) {
+    for (const [i, { model, effort }] of route.candidates.entries()) {
+      // A model the caller named is tried whatever its cooldown says: the
+      // cooldown may be stale or a false alarm, and the caller asked for it.
+      const pinned = i === 0 && req.model !== undefined;
+      if (model && !pinned && this.cooldowns.cooling(model)) {
         attempts.push(`${model}: quota cooldown, ${this.cooldowns.describe(model)} left`);
         continue;
       }
       try {
-        return await this.runOnce(req, prompt, model, effort, attempts, route.note);
+        return await this.runOnce(req, prompt, model, effort, attempts, route.note, mayRepeat);
       } catch (err) {
-        if (err instanceof QuotaError && model) {
-          this.cooldowns.set(model, err.resetSeconds);
-          attempts.push(
-            `${model}: quota exhausted${err.resetText ? ` (resets in ${err.resetText})` : ""}`,
-          );
-          continue;
-        }
-        if (err instanceof AgyFailure && err.policy.failover && model) {
-          // `failover` is granted to quota alone, and a quota reached this branch
-          // rather than the one above because it was classified from stderr or the
-          // envelope instead of the log. It is still an exhausted model: record the
-          // cooldown, or every later call re-burns it before failing over again.
-          if (err.kind === "quota") this.cooldowns.set(model, undefined);
-          attempts.push(`${model}: ${err.message}`);
-          continue;
-        }
-        throw err;
+        this.recordFailedSpend(model, err);
+        const quota =
+          err instanceof QuotaError || (err instanceof AgyFailure && err.policy.failover);
+        if (!quota || !model) throw err;
+        // `failover` is granted to quota alone. A quota classified from stderr or
+        // the envelope rather than the log is still an exhausted model: record
+        // the cooldown, or every later call re-burns it before failing over.
+        const reset = err instanceof QuotaError ? err.resetSeconds : undefined;
+        this.cooldowns.set(model, reset);
+        if (!(await mayRepeat()))
+          throw new NotRepeatedError(err as Error, "failed over to the next model");
+        attempts.push(
+          err instanceof QuotaError
+            ? `${model}: quota exhausted${err.resetText ? ` (resets in ${err.resetText})` : ""}`
+            : `${model}: ${(err as Error).message}`,
+        );
       }
     }
 
@@ -523,6 +636,12 @@ export class Delegator {
     );
   }
 
+  /** A failed run still spent tokens; the budget has to see them. */
+  private recordFailedSpend(model: string | undefined, err: unknown): void {
+    const usage = (err as { usage?: AgyUsage } | undefined)?.usage;
+    if (usage) this.ledger.record(model, usage);
+  }
+
   private async runOnce(
     req: DelegationRequest,
     prompt: string,
@@ -530,6 +649,7 @@ export class Delegator {
     effort: Effort | undefined,
     attempts: string[],
     note: string | undefined,
+    mayRepeat: MayRepeat,
   ): Promise<Delegation> {
     const call = () =>
       runAgy(
@@ -551,20 +671,27 @@ export class Delegator {
         },
         this.cfg,
         this.caps,
-        { spawn: this.deps.spawn, timing: this.deps.timing },
+        {
+          spawn: this.deps.spawn,
+          timing: this.deps.timing,
+          track: (proc) => {
+            this.live.add(proc);
+            return () => this.live.delete(proc);
+          },
+        },
       );
 
     let result;
     try {
       result = await call();
     } catch (err) {
-      // A network blip is the one failure worth repeating verbatim.
-      if (err instanceof AgyFailure && err.policy.retryOnce) {
-        attempts.push(`${model ?? "agy default"}: ${err.kind}, retrying once`);
-        result = await call();
-      } else {
-        throw err;
-      }
+      // A network blip is the one failure worth repeating verbatim, and only
+      // when the first run provably left the tree as it found it.
+      if (!(err instanceof AgyFailure) || !err.policy.retryOnce) throw err;
+      this.recordFailedSpend(model, err);
+      if (!(await mayRepeat())) throw new NotRepeatedError(err, "retried");
+      attempts.push(`${model ?? "agy default"}: ${err.kind}, retrying once`);
+      result = await call();
     }
 
     this.ledger.record(model, result.usage);
@@ -598,9 +725,14 @@ export class Delegator {
   async runMany(
     req: DelegationRequest,
     legs: { model?: string; prompt?: string; label: string }[],
+    /** The caller listed the models itself, rather than taking the default council. */
+    opts: { modelsChosen?: boolean } = {},
   ): Promise<{ label: string; delegation?: Delegation; error?: string }[]> {
-    // Legs swallow their own errors, so the ask-once gate has to trip before fan-out.
-    if (this.cfg.askModel && !this.prefs.load() && !req.model && !req.conversationId) {
+    // Legs swallow their own errors, so the ask-once gate has to trip before
+    // fan-out — unless the caller named the models, which is a choice. The
+    // default council also names models, but nobody chose those.
+    const chosen = req.model !== undefined || opts.modelsChosen === true;
+    if (this.cfg.askModel && !this.prefs.load() && !chosen && !req.conversationId) {
       throw new ModelNotChosenError(await this.defaultChoice(), await this.models.available());
     }
     return Promise.all(
@@ -609,7 +741,11 @@ export class Delegator {
           const delegation = await this.run({
             ...req,
             ...(leg.model ? { model: leg.model } : {}),
-            ...(leg.prompt ? { args: { ...(req.args as object), prompt: leg.prompt } } : {}),
+            // `!== undefined`, not truthiness: an empty task used to fall back to
+            // the joined prompt of every task, running all the others again.
+            ...(leg.prompt !== undefined
+              ? { args: { ...(req.args as object), prompt: leg.prompt } }
+              : {}),
           });
           return { label: leg.label, delegation };
         } catch (err) {
