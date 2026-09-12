@@ -93,3 +93,35 @@ describe("CooldownRegistry", () => {
     expect(reg.describe("ModelA")).toBe("1h1m1s");
   });
 });
+
+describe("reset duration parsing (COR-M1)", () => {
+  it("parses multi-day resets instead of silently defaulting to 15 minutes", () => {
+    expect(parseResetDuration("1d2h30m")).toBe(86_400 + 7200 + 1800);
+    expect(parseResetDuration("2d")).toBe(172_800);
+    expect(detectQuota("RESOURCE_EXHAUSTED (code 429). Resets in 1d2h30m.")).toEqual({
+      resetText: "1d2h30m",
+      resetSeconds: 86_400 + 7200 + 1800,
+    });
+  });
+
+  it("still parses the h/m/s forms agy emits today", () => {
+    expect(parseResetDuration("96h53m25s")).toBe(96 * 3600 + 53 * 60 + 25);
+    expect(parseResetDuration("45m")).toBe(2700);
+  });
+
+  it("reports an unparseable reset as unknown rather than as zero", () => {
+    expect(parseResetDuration("")).toBeUndefined();
+    expect(parseResetDuration("2 hours")).toBeUndefined();
+    const info = detectQuota("RESOURCE_EXHAUSTED (code 429). Resets in 2 hours.");
+    expect(info).not.toBeNull();
+    expect(info?.resetSeconds).toBeUndefined();
+    expect(info?.resetText).toBeUndefined();
+  });
+
+  it("detects a 429 whose wording is not agy's exact current string", () => {
+    // The log poller is the only channel for quota, so this must not be brittle.
+    expect(detectQuota("google.api_core.exceptions.ResourceExhausted: 429")).not.toBeNull();
+    expect(detectQuota("quota exceeded for this model")).not.toBeNull();
+    expect(detectQuota("everything is fine")).toBeNull();
+  });
+});

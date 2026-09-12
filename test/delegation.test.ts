@@ -13,8 +13,6 @@ import {
   type DelegatorOptions,
 } from "./support.js";
 
-const SESSIONS = '{"/repo":"sess-from-cache"}';
-
 /** An agy that hits a 429 for `quotaModels` and stalls forever for `stallModels`. */
 function agyWhere(quotaModels: string[] = [], stallModels: string[] = []) {
   return fakeAgy((args) => {
@@ -31,7 +29,7 @@ function delegatorFor(
   cfg: Partial<Config> = {},
   extra: Partial<DelegatorOptions> = {},
 ) {
-  return makeDelegator({ spawn: agy.spawn, cfg, sessions: SESSIONS, ...extra }).delegator;
+  return makeDelegator({ spawn: agy.spawn, cfg, ...extra }).delegator;
 }
 
 const request = (tool: string, args: Record<string, unknown>) => ({
@@ -58,12 +56,19 @@ describe("Delegator", () => {
     expect(d.sessionId).toBe("from-envelope");
   });
 
-  it("falls back to the cache only when agy is too old to report a conversation id", async () => {
+  // SEC-M5. agy's last-conversation cache is keyed by directory across the whole
+  // machine, so falling back to it handed the caller whatever interactive agy
+  // session the user last ran there — readable and appendable through follow_up.
+  // A run that reports no conversation id now has no resumable session at all.
+  it("never invents a session id from agy's global conversation cache", async () => {
     const agy = fakeAgy({ stdout: "plain answer" });
-    const d = await delegatorFor(agy, {}, { caps: oldCaps }).run(
-      request("delegate", { prompt: "x" }),
-    );
-    expect(d.sessionId).toBe("sess-from-cache");
+    // write:true so the run uses accept-edits: an old agy cannot enforce plan
+    // mode, and a read-only call against one is now refused outright.
+    const d = await delegatorFor(agy, {}, { caps: oldCaps }).run({
+      ...request("delegate", { prompt: "x" }),
+      write: true,
+    });
+    expect(d.sessionId).toBeUndefined();
   });
 
   it("fails over to the next chain model on quota exhaustion", async () => {
@@ -508,5 +513,71 @@ describe("Delegator.runMany", () => {
     ]);
     expect(results.find((r) => r.label === "flash")?.delegation?.output).toBe("fine");
     expect(results.find((r) => r.label === "pro")?.error).toMatch(/boom/);
+  });
+});
+
+describe("containment (SEC-M1, SEC-M6)", () => {
+  it("rejects a file argument whose derived workspace root escapes the allowed roots", async () => {
+    // `extraDirs` derives a workspace root with dirname(). A file argument equal
+    // to the allowed root therefore derives its PARENT, which used to be handed
+    // to agy as --add-dir without ever being containment-checked.
+    const agy = fakeAgy({ answer: "ok" });
+    const d = delegatorFor(agy, { allowedRoots: ["/repo"] });
+    await expect(
+      d.run(request("analyze_files", { files: ["/repo"], question: "q" })),
+    ).rejects.toThrow(/outside the allowed roots/i);
+  });
+
+  it("still allows a file inside an allowed root", async () => {
+    const agy = fakeAgy({ answer: "ok" });
+    const d = delegatorFor(agy, { allowedRoots: ["/repo"] });
+    await expect(
+      d.run(request("analyze_files", { files: ["/repo/src/a.ts"], question: "q" })),
+    ).resolves.toBeDefined();
+  });
+});
+
+describe("read-only violation reporting (OWN-F3)", () => {
+  const digests = (...seq: string[]) => {
+    let i = 0;
+    return async () => ({ method: "scan" as const, digest: seq[Math.min(i++, seq.length - 1)] });
+  };
+
+  it("flags a plan-mode run that changed the working tree", async () => {
+    // agy does write in plan mode when permissions are skipped, verified against
+    // agy 1.2.2. The bridge cannot prevent it, so it must report it.
+    const agy = fakeAgy({ answer: "done" });
+    const d = await makeDelegator({
+      spawn: agy.spawn,
+      snapshot: digests("before", "after"),
+    }).delegator.run(request("delegate", { prompt: "x" }));
+    expect(d.wroteInReadOnlyMode).toBe(true);
+  });
+
+  it("reports a clean plan-mode run as demonstrably unchanged", async () => {
+    const agy = fakeAgy({ answer: "done" });
+    const d = await makeDelegator({
+      spawn: agy.spawn,
+      snapshot: digests("same", "same"),
+    }).delegator.run(request("delegate", { prompt: "x" }));
+    expect(d.wroteInReadOnlyMode).toBe(false);
+  });
+
+  it("does not watch a run that was asked to write", async () => {
+    const agy = fakeAgy({ answer: "done" });
+    const d = await makeDelegator({
+      spawn: agy.spawn,
+      snapshot: digests("before", "after"),
+    }).delegator.run({ ...request("delegate", { prompt: "x" }), write: true });
+    expect(d.wroteInReadOnlyMode).toBeUndefined();
+  });
+
+  it("says nothing when the tree could not be fingerprinted", async () => {
+    const agy = fakeAgy({ answer: "done" });
+    const d = await makeDelegator({
+      spawn: agy.spawn,
+      snapshot: async () => ({ method: "none" as const }),
+    }).delegator.run(request("delegate", { prompt: "x" }));
+    expect(d.wroteInReadOnlyMode).toBeUndefined();
   });
 });

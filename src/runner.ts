@@ -63,8 +63,6 @@ export interface RunResult {
   structuredOutput?: unknown;
   numTurns: number;
   timedOut: boolean;
-  /** Original length when the output was cut, absent when it was not. */
-  truncatedFrom?: number;
 }
 
 export interface AgyProcess {
@@ -209,10 +207,32 @@ export function buildArgs(req: RunRequest, cfg: Config, opts: BuildArgsOptions):
   const push = (flag: string, ...values: string[]) => {
     if (caps.has(flag)) args.push(flag, ...values);
   };
+  /**
+   * A flag whose whole job is to take authority away. Dropping one silently
+   * grants the authority it was meant to remove, so an agy build that cannot
+   * honour it fails the call instead of running with more power than asked.
+   */
+  const require = (flag: string, ...values: string[]) => {
+    if (!caps.has(flag)) {
+      throw new AgyFailure(
+        "agy_error",
+        `agy ${caps.version} does not support ${flag}, which this call needs in order to ` +
+          `restrict the run. Refusing rather than running with more authority than requested. ` +
+          `Upgrade the Antigravity CLI, or set AGY_PATH to a build that supports it.`,
+      );
+    }
+    args.push(flag, ...values);
+  };
 
   if (cfg.skipPermissions) push("--dangerously-skip-permissions");
-  if (req.sandbox ?? cfg.sandbox) push("--sandbox");
-  if (req.mode) push("--mode", req.mode);
+  // A caller who asked to be confined must not be quietly unconfined.
+  if (req.sandbox ?? cfg.sandbox) require("--sandbox");
+  // "plan" is the read-only guarantee, so it is required; "accept-edits" only
+  // grants authority, and a build that ignores it simply does less.
+  if (req.mode === "plan") require("--mode", req.mode);
+  else if (req.mode) push("--mode", req.mode);
+  // Best-effort: a build with no such flag most plausibly has no slash-command
+  // expansion to disable, so refusing the run would buy nothing.
   if (!req.slashCommands) push("--disable-slash-commands");
 
   args.push("--add-dir", req.cwd);
@@ -347,7 +367,12 @@ export async function runAgy(
         try {
           drainProgress();
           // agy only reports RESOURCE_EXHAUSTED to its log file, never to stdout.
+          // Bank every read before checking `settled`: `tail.read()` consumes the
+          // lines, so returning early here used to throw away a 429 that arrived
+          // while the run was finishing, and the post-run check then found an
+          // empty log and reported "empty answer" instead of failing over.
           const appended = await tail.read();
+          if (appended) trailingLog += appended;
           if (settled) return; // settled during the async read — don't kill a finished run
           const quota = appended && detectQuota(appended);
           if (quota) {
@@ -417,7 +442,7 @@ export async function runAgy(
     if (child && !exited) await Promise.race([child.wait(), delay(reapMs)]);
     // Drain before deleting: a 429 that lands between the last poll tick and the
     // exit only exists in this file, and the post-run check below needs it.
-    trailingLog = await tail.flush();
+    trailingLog += await tail.flush();
     await rm(logPath, { force: true }).catch(() => {});
   });
 
@@ -425,24 +450,27 @@ export async function runAgy(
   const envelope = outputFormat ? parseEnvelope(finished.stdout) : null;
   const answer = answerOf(envelope, finished.stdout);
 
+  // A quota 429 never reaches stdout, only the log. Check it before anything
+  // else and on every path: a run that overran its print-timeout is exactly
+  // where exhaustion is most likely, and skipping the check there returned a
+  // truncated answer as a success while the model stayed uncooled.
+  const quota = detectQuota(trailingLog);
+  if (quota) throw new QuotaError(req.model, quota);
+
   if (!timedOut) {
     const failure = classifyRun({
       envelope,
       exitCode: finished.code,
       stderr: finished.stderr,
     });
-    if (failure) {
-      // A quota 429 never reaches stdout, only the log — check what was left in it.
-      const quota = detectQuota(trailingLog);
-      if (quota) throw new QuotaError(req.model, quota);
-      throw new AgyFailure(failure.kind, failure.message, req.model);
-    }
+    if (failure) throw new AgyFailure(failure.kind, failure.message, req.model);
   }
 
-  const cut = truncate(answer, cfg.maxOutputChars);
+  // Redaction and truncation both live in `Delegator.finish`, in that order, so
+  // that every path — cold run, warm turn, warm timeout — gets both, and so a
+  // secret straddling the cut point cannot survive by being split in half.
   return {
-    output: cut.text,
-    ...(cut.from !== undefined ? { truncatedFrom: cut.from } : {}),
+    output: answer,
     ...(envelope?.conversationId ? { conversationId: envelope.conversationId } : {}),
     deniedActions: envelope?.deniedActions ?? [],
     usage: envelope?.usage ?? EMPTY_USAGE,

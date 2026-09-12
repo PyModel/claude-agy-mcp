@@ -66,8 +66,13 @@ export function assertWithinRoots(paths: string[], roots: string[]): void {
 /** Shapes that are secrets by construction, whatever their entropy. */
 const KNOWN_SECRETS: [string, RegExp][] = [
   ["openai key", /\bsk-[A-Za-z0-9_-]{20,}\b/g],
+  // Stripe and friends use an underscore, so the hyphenated `sk-` rule above
+  // never matched them. Live keys are the ones worth catching.
+  ["stripe key", /\b[srp]k_(?:live|test)_[A-Za-z0-9]{16,}\b/g],
   ["github token", /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g],
-  ["aws access key", /\bAKIA[0-9A-Z]{16}\b/g],
+  ["gitlab token", /\bglpat-[A-Za-z0-9_-]{20,}\b/g],
+  ["npm token", /\bnpm_[A-Za-z0-9]{30,}\b/g],
+  ["aws access key", /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g],
   ["google api key", /\bAIza[0-9A-Za-z_-]{30,}\b/g],
   ["slack token", /\bxox[abprs]-[0-9A-Za-z-]{10,}\b/g],
   ["jwt", /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g],
@@ -76,6 +81,13 @@ const KNOWN_SECRETS: [string, RegExp][] = [
     /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
   ],
 ];
+
+/**
+ * `scheme://user:secret@host`. Connection strings are how a database password
+ * most often reaches a code review, and no shape rule above sees them because
+ * the password itself is arbitrary text.
+ */
+const URL_CREDENTIALS = /\b([a-z][a-z0-9+.-]*:\/\/)([^\s/:@]+):([^\s/@]+)@/gi;
 
 /** `SOMETHING_SECRET=<value>` / `"api_key": "<value>"` with a long-enough value. */
 const ASSIGNED_SECRET =
@@ -103,9 +115,40 @@ export function redact(text: string): Redaction {
       return `[redacted ${label}]`;
     });
   }
+  out = out.replace(URL_CREDENTIALS, (_m, scheme: string, user: string) => {
+    count++;
+    return `${scheme}${user}:[redacted]@`;
+  });
   out = out.replace(ASSIGNED_SECRET, (_m, name: string, sep: string) => {
     count++;
     return `${name}${sep}[redacted]`;
   });
   return { text: out, count };
+}
+
+/**
+ * Redacts every string anywhere in a JSON-shaped value.
+ *
+ * `structuredContent` is model output too, and it is the one return path a
+ * caller parses rather than reads, so leaving it unscrubbed put secrets
+ * straight into machine-consumed fields.
+ */
+export function redactDeep(value: unknown): { value: unknown; count: number } {
+  let count = 0;
+  const walk = (v: unknown): unknown => {
+    if (typeof v === "string") {
+      const r = redact(v);
+      count += r.count;
+      return r.text;
+    }
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === "object") {
+      return Object.fromEntries(
+        Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, walk(x)]),
+      );
+    }
+    return v;
+  };
+  const out = walk(value);
+  return { value: out, count };
 }

@@ -85,12 +85,20 @@ describe("buildArgs", () => {
     expect(out).not.toContain("--disable-slash-commands");
   });
 
-  it("omits every flag an older agy does not advertise", () => {
+  it("omits capability-gated flags an older agy does not advertise", () => {
     const out = buildArgs(
-      { prompt: "q", cwd: "/repo", mode: "plan", effort: "low", jsonSchema: "{}", timeoutSec: 600 },
+      {
+        prompt: "q",
+        cwd: "/repo",
+        mode: "accept-edits",
+        effort: "low",
+        jsonSchema: "{}",
+        timeoutSec: 600,
+      },
       cfg,
       { logPath: "/tmp/run.log", caps: oldCaps },
     );
+    // These either add capability or are inert without it, so dropping them is safe.
     for (const flag of [
       "--mode",
       "--effort",
@@ -102,6 +110,26 @@ describe("buildArgs", () => {
       expect(out).not.toContain(flag);
     }
     expect(valueOf(out, "--print-timeout")).toBe("600s");
+  });
+
+  // SEC-M4. Dropping a restriction is not the same as dropping a capability:
+  // it hands the run more authority than the caller asked for, silently.
+  it("refuses rather than running unrestricted when plan mode cannot be enforced", () => {
+    expect(() =>
+      buildArgs({ prompt: "q", cwd: "/repo", mode: "plan", timeoutSec: 600 }, cfg, {
+        logPath: "/tmp/run.log",
+        caps: oldCaps,
+      }),
+    ).toThrow(/does not support --mode/);
+  });
+
+  it("refuses rather than running unsandboxed when the caller asked for a sandbox", () => {
+    expect(() =>
+      buildArgs({ prompt: "q", cwd: "/repo", sandbox: true, timeoutSec: 600 }, cfg, {
+        logPath: "/tmp/run.log",
+        caps: oldCaps,
+      }),
+    ).toThrow(/does not support --sandbox/);
   });
 });
 

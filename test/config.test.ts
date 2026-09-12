@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { loadConfig, parseRoots, timeoutFor } from "../src/config.js";
+import { ConfigError, loadConfig, parseRoots, timeoutFor } from "../src/config.js";
 
 describe("loadConfig", () => {
   it("returns defaults for empty env", () => {
@@ -44,18 +44,31 @@ describe("loadConfig", () => {
     expect(c.sandbox).toBe(true);
   });
 
-  it("falls back to defaults on non-numeric values", () => {
-    const c = loadConfig({
-      AGY_TIMEOUT: "abc",
-      AGY_MAX_RUNTIME: "abc",
-      AGY_MAX_OUTPUT_CHARS: "-5",
-    });
-    expect(c.defaultTimeoutSec).toBe(3600);
-    expect(c.maxOutputChars).toBe(50_000);
+  it("rejects non-numeric values instead of falling back to defaults", () => {
+    expect(() => loadConfig({ AGY_TIMEOUT: "abc" })).toThrow(ConfigError);
+    expect(() => loadConfig({ AGY_MAX_RUNTIME: "abc" })).toThrow(ConfigError);
+    expect(() => loadConfig({ AGY_MAX_OUTPUT_CHARS: "-5" })).toThrow(ConfigError);
   });
 
-  it("falls back to the default ceiling for zero", () => {
-    expect(loadConfig({ AGY_MAX_RUNTIME: "0" }).defaultTimeoutSec).toBe(3600);
+  it("names the offending variable and value in the error", () => {
+    try {
+      loadConfig({ AGY_MAX_CONCURRENCY: "lots" });
+      expect.unreachable("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as ConfigError).variable).toBe("AGY_MAX_CONCURRENCY");
+      expect((e as ConfigError).value).toBe("lots");
+      expect((e as Error).message).toContain("positive integer");
+    }
+  });
+
+  it("treats unset and empty alike, so an exported-but-blank var keeps the default", () => {
+    expect(loadConfig({ AGY_TIMEOUT: "", AGY_SKIP_PERMISSIONS: "" }).defaultTimeoutSec).toBe(3600);
+    expect(loadConfig({ AGY_SKIP_PERMISSIONS: "" }).skipPermissions).toBe(true);
+  });
+
+  it("rejects a zero ceiling instead of silently using the default", () => {
+    expect(() => loadConfig({ AGY_MAX_RUNTIME: "0" })).toThrow(ConfigError);
   });
 
   it("uses the AGY_MAX_RUNTIME ceiling when AGY_TIMEOUT is unset", () => {
@@ -67,9 +80,13 @@ describe("loadConfig", () => {
     expect(c.perToolTimeouts).toEqual({ deep_search: 300, delegate: 900 });
   });
 
-  it("ignores non-positive per-tool timeout values", () => {
-    const c = loadConfig({ AGY_TIMEOUT_DEEP_SEARCH: "abc", AGY_TIMEOUT_DELEGATE: "-5" });
-    expect(c.perToolTimeouts).toEqual({});
+  it("rejects a non-positive per-tool timeout instead of dropping it", () => {
+    expect(() => loadConfig({ AGY_TIMEOUT_DEEP_SEARCH: "abc" })).toThrow(ConfigError);
+    expect(() => loadConfig({ AGY_TIMEOUT_DELEGATE: "-5" })).toThrow(ConfigError);
+  });
+
+  it("still ignores a per-tool timeout that is set but empty", () => {
+    expect(loadConfig({ AGY_TIMEOUT_DELEGATE: "" }).perToolTimeouts).toEqual({});
   });
 
   it("prefers an explicit AGY_TIMEOUT over the ceiling", () => {
@@ -80,8 +97,37 @@ describe("loadConfig", () => {
     expect(loadConfig({ AGY_ON_FAILURE: "strict" }).onFailure).toBe("strict");
   });
 
-  it("treats unknown AGY_ON_FAILURE values as fallback", () => {
-    expect(loadConfig({ AGY_ON_FAILURE: "explode" }).onFailure).toBe("fallback");
+  it("rejects an unknown AGY_ON_FAILURE instead of treating it as fallback", () => {
+    expect(() => loadConfig({ AGY_ON_FAILURE: "explode" })).toThrow(ConfigError);
+  });
+
+  // SEC-C1. These two settings used to bypass the shared boolean parser:
+  // skipPermissions was `!== "false"` and sandbox was `=== "true"`, so an
+  // operator hardening the server with the numeric spelling got the opposite of
+  // what they asked for, silently.
+  it("honours every accepted spelling of AGY_SKIP_PERMISSIONS", () => {
+    for (const off of ["false", "0", "no", "off", "FALSE", " Off "]) {
+      expect(loadConfig({ AGY_SKIP_PERMISSIONS: off }).skipPermissions, off).toBe(false);
+    }
+    for (const on of ["true", "1", "yes", "on"]) {
+      expect(loadConfig({ AGY_SKIP_PERMISSIONS: on }).skipPermissions, on).toBe(true);
+    }
+    expect(loadConfig({}).skipPermissions).toBe(true);
+  });
+
+  it("honours every accepted spelling of AGY_SANDBOX", () => {
+    for (const on of ["true", "1", "yes", "on"]) {
+      expect(loadConfig({ AGY_SANDBOX: on }).sandbox, on).toBe(true);
+    }
+    expect(loadConfig({ AGY_SANDBOX: "0" }).sandbox).toBe(false);
+    expect(loadConfig({}).sandbox).toBe(false);
+  });
+
+  it("refuses to start on an unparseable security setting rather than guessing", () => {
+    expect(() => loadConfig({ AGY_SKIP_PERMISSIONS: "nope" })).toThrow(ConfigError);
+    expect(() => loadConfig({ AGY_SANDBOX: "maybe" })).toThrow(ConfigError);
+    expect(() => loadConfig({ AGY_REDACT: "sometimes" })).toThrow(ConfigError);
+    expect(() => loadConfig({ AGY_EFFORT: "extreme" })).toThrow(ConfigError);
   });
 });
 

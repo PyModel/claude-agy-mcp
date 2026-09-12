@@ -43,9 +43,24 @@ const spawnSessionProcess: SpawnSession = (file, args, opts) => {
     ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
   });
   const decoder = new StringDecoder("utf8");
+  // A dead resident process is an expected condition, not a crash. Without a
+  // listener, EPIPE on this stream is an unhandled 'error' event and Node exits
+  // the whole bridge; the write path below reports it as a normal turn failure
+  // so the caller falls back to a cold run.
+  child.stdin?.on("error", () => {});
+  child.stdout?.on("error", () => {});
+  child.stderr?.on("error", () => {});
   return {
     write: (line) => {
-      child.stdin?.write(line);
+      const stdin = child.stdin;
+      if (!stdin || stdin.destroyed || stdin.writableEnded) {
+        throw new WarmUnavailable("resident session stdin is closed");
+      }
+      stdin.write(line, (err) => {
+        // Asynchronous failures cannot reach the caller's try/catch; killing the
+        // child turns the next turn into a clean cold run instead of a hang.
+        if (err) child.kill("SIGTERM");
+      });
     },
     onData: (cb) => {
       child.stdout?.on("data", (d: Buffer) => cb(decoder.write(d)));
@@ -71,6 +86,9 @@ const spawnSessionProcess: SpawnSession = (file, args, opts) => {
   };
 };
 
+/** One turn's stream-JSON line cannot legitimately exceed this. */
+const MAX_SESSION_BUFFER = 8 * 1024 * 1024;
+
 /** The driver could not answer this turn; the caller should run cold instead. */
 export class WarmUnavailable extends Error {
   constructor(reason: string) {
@@ -80,6 +98,26 @@ export class WarmUnavailable extends Error {
 }
 
 /** The turn ran out of time. The session is gone; `text` is what it streamed. */
+/**
+ * The turn was already sent to agy and then interrupted, so nobody knows whether
+ * it ran.
+ *
+ * This is deliberately *not* a `WarmUnavailable`: that means "nothing happened,
+ * run cold instead", and the caller acts on it by re-sending the prompt. Re-sending
+ * a turn agy may already have processed runs it twice, which for a write follow-up
+ * means applying an edit twice. An ambiguous outcome has to be reported, not retried.
+ */
+export class WarmTurnUncertain extends Error {
+  constructor(reason: string) {
+    super(
+      `The resident agy session was dropped (${reason}) after the turn had already been sent, ` +
+        `so it may or may not have run. Not retrying automatically: inspect the working tree and ` +
+        `the conversation before re-sending.`,
+    );
+    this.name = "WarmTurnUncertain";
+  }
+}
+
 export class WarmTimeout extends Error {
   constructor(readonly text: string) {
     super("resident agy session exceeded the turn timeout");
@@ -89,6 +127,8 @@ export class WarmTimeout extends Error {
 
 interface Session {
   key: string;
+  /** The directory this process was started in; a turn elsewhere must not reuse it. */
+  cwd: string;
   proc: SessionProcess;
   buffer: string;
   alive: boolean;
@@ -99,6 +139,8 @@ interface Session {
   idleTimer?: NodeJS.Timeout;
   /** Set while a turn is in flight. */
   pending?: {
+    /** True once the prompt reached agy's stdin, so a replay would be a second run. */
+    sent?: boolean;
     resolve(envelope: AgyEnvelope): void;
     reject(err: Error): void;
     onProgress?: (text: string) => void;
@@ -139,6 +181,9 @@ function usageDelta(now: AgyUsage, before: AgyUsage): AgyUsage {
 
 export class WarmSessions {
   private readonly sessions = new Map<string, Session>();
+  /** Outstanding SIGKILL escalations, cleared on shutdown so nothing is left armed. */
+  private readonly pendingKills = new Set<ReturnType<typeof setTimeout>>();
+  private readonly killGraceMs = 2_000;
 
   constructor(
     private readonly cfg: Config,
@@ -174,7 +219,14 @@ export class WarmSessions {
     if (!this.enabled) throw new WarmUnavailable("warm sessions are disabled");
     if (opts.signal?.aborted) throw new Error("agy run cancelled by client.");
 
-    const session = this.sessions.get(conversationId) ?? this.start(conversationId, cwd);
+    const existing = this.sessions.get(conversationId);
+    // SEC-M6. A resident process keeps the cwd and --add-dir it was started with.
+    // Reusing it for a turn whose cwd is different runs that turn somewhere the
+    // caller did not ask for and did not have containment-checked for this call.
+    if (existing && existing.cwd !== cwd) {
+      throw new WarmUnavailable("resident session belongs to a different working directory");
+    }
+    const session = existing ?? this.start(conversationId, cwd);
     if (!session.alive) {
       this.drop(session, "process is gone");
       throw new WarmUnavailable("resident agy session had exited");
@@ -206,7 +258,9 @@ export class WarmSessions {
         opts.signal?.addEventListener("abort", onAbort, { once: true });
         try {
           session.proc.write(turnMessage(prompt));
+          if (session.pending) session.pending.sent = true;
         } catch (err) {
+          // Nothing was accepted by the pipe, so a cold retry is safe.
           reject(new WarmUnavailable(`could not write to resident session: ${String(err)}`));
         }
       });
@@ -251,6 +305,7 @@ export class WarmSessions {
     const spawnFn = this.deps.spawnSession ?? spawnSessionProcess;
     const session: Session = {
       key: conversationId,
+      cwd,
       proc: spawnFn(this.cfg.agyPath, args, {
         cwd,
         ...(this.deps.env ? { env: this.deps.env } : {}),
@@ -280,6 +335,13 @@ export class WarmSessions {
 
   private consume(session: Session, chunk: string): void {
     session.buffer += chunk;
+    // Bounded: agy emits newline-delimited JSON, so a buffer that grows past this
+    // without yielding an event is malformed output, not a big answer. Left
+    // unbounded it was a slow memory leak for the life of the resident session.
+    if (session.buffer.length > MAX_SESSION_BUFFER) {
+      this.drop(session, "resident session produced unparseable output");
+      return;
+    }
     const { events, rest } = parseStreamEvents(session.buffer);
     session.buffer = rest;
     for (const ev of events) {
@@ -312,19 +374,45 @@ export class WarmSessions {
     return true;
   }
 
-  private drop(session: Session, why: string): void {
+  private drop(session: Session, why: string, hard = false): void {
     if (session.idleTimer) clearTimeout(session.idleTimer);
     session.alive = false;
     this.sessions.delete(session.key);
-    session.pending?.reject(new WarmUnavailable(`resident session dropped: ${why}`));
-    try {
-      session.proc.kill("SIGTERM");
-    } catch {
-      // already gone
+    session.pending?.reject(
+      session.pending.sent
+        ? new WarmTurnUncertain(why)
+        : new WarmUnavailable(`resident session dropped: ${why}`),
+    );
+    const signal = (sig: NodeJS.Signals) => {
+      try {
+        session.proc.kill(sig);
+      } catch {
+        // already gone
+      }
+    };
+    if (hard) {
+      // On the way out there is no one left to escalate later, and a deferred
+      // timer would be unref'd or simply never reached. These children are
+      // detached and run with permissions skipped, so leaving one behind means
+      // leaving it behind forever: kill it outright rather than politely.
+      signal("SIGTERM");
+      signal("SIGKILL");
+      return;
     }
+    signal("SIGTERM");
+    // Escalate like the cold path does, for a drop while the bridge keeps running.
+    const escalate = setTimeout(() => {
+      this.pendingKills.delete(escalate);
+      signal("SIGKILL");
+    }, this.killGraceMs);
+    escalate.unref?.();
+    this.pendingKills.add(escalate);
   }
 
+  /** Stops every resident session. Safe to call more than once. */
   shutdown(): void {
-    for (const s of [...this.sessions.values()]) this.drop(s, "shutdown");
+    for (const t of this.pendingKills) clearTimeout(t);
+    this.pendingKills.clear();
+    for (const s of [...this.sessions.values()]) this.drop(s, "shutdown", true);
   }
 }

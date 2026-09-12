@@ -44,11 +44,7 @@ function handlerFor(
   overrides: Partial<Config> = {},
   agy = fakeAgy({ answer: "the answer" }),
 ) {
-  const { cfg, delegator } = makeDelegator({
-    spawn: agy.spawn,
-    cfg: overrides,
-    sessions: JSON.stringify({ [process.cwd()]: "sess-fallback" }),
-  });
+  const { cfg, delegator } = makeDelegator({ spawn: agy.spawn, cfg: overrides });
   return { handler: createToolHandler(toolNamed(name), cfg, delegator), agy, delegator };
 }
 
@@ -432,7 +428,8 @@ describe("createToolHandler", () => {
       await handler({ prompt: "q", models: ["Gemini 3.8 Flash (High)", "Gemini 3.1 Pro (High)"] }),
     );
     expect(text).toContain("2 of 2 legs answered");
-    expect(text).toContain("### Gemini 3.8 Flash (High)");
+    // The leg heading must carry the per-call nonce, or a payload could forge it.
+    expect(text).toMatch(/\[claude-agy-mcp [0-9a-f]{12}\] leg: Gemini 3\.8 Flash \(High\)/);
     expect(text).toContain("answer from Gemini 3.1 Pro (High)");
     expect(agy.runs).toHaveLength(2);
   });

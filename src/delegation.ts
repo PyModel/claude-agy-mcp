@@ -1,7 +1,8 @@
 import type { Capabilities } from "./capabilities.js";
 import { Admission } from "./concurrency.js";
 import { delegationDepth, type Config } from "./config.js";
-import { assertWithinRoots, redact } from "./egress.js";
+import { assertWithinRoots, redact, redactDeep } from "./egress.js";
+import { snapshotTree, treeChanged, type TreeSnapshot } from "./worktree.js";
 import { EMPTY_USAGE, type AgyUsage, type DeniedAction } from "./envelope.js";
 import { AgyFailure } from "./failure.js";
 import { resolveEntry, type Effort, type ModelInfo, type ModelRegistry } from "./models.js";
@@ -11,8 +12,7 @@ import {
   type PreferenceStore,
 } from "./preferences.js";
 import { CooldownRegistry, QuotaError } from "./quota.js";
-import { runAgy, type RunnerDeps, type RunProgress } from "./runner.js";
-import { sessionFor, type ReadSessionsFile } from "./sessions.js";
+import { runAgy, type RunnerDeps, type RunProgress, truncate } from "./runner.js";
 import { modeFor, type ToolDef } from "./tools.js";
 import { UsageLedger } from "./usage.js";
 import { WarmSessions, WarmTimeout, WarmUnavailable, type WarmDeps } from "./warm.js";
@@ -60,6 +60,14 @@ export interface Delegation {
   warm: boolean;
   /** How many credential-shaped strings were scrubbed from the output. */
   redactions: number;
+  /**
+   * A plan-mode run changed the working tree anyway.
+   *
+   * `true` means the fingerprint moved and the run wrote despite being asked
+   * not to; `false` means it demonstrably did not; `undefined` means the tree
+   * could not be fingerprinted, which is not the same as "nothing happened".
+   */
+  wroteInReadOnlyMode?: boolean;
 }
 
 /** Thrown while AGY_ASK_MODEL is on and nobody has called `set_model` yet. */
@@ -86,8 +94,9 @@ export class ModelNotChosenError extends Error {
 export interface DelegationDeps extends RunnerDeps, WarmDeps {
   /** Where the user\'s `set_model` choice lives; in memory unless given. */
   preferences?: PreferenceStore;
-  readSessions?: ReadSessionsFile;
   cooldowns?: CooldownRegistry;
+  /** Fingerprints the working tree; injected so tests need no real filesystem. */
+  snapshot?: (cwd: string) => Promise<TreeSnapshot>;
 }
 
 /** One model to try, already reconciled with the effort agy will accept for it. */
@@ -243,8 +252,13 @@ export class Delegator {
       throw new DelegationDepthError(this.depth, this.cfg.maxDelegationDepth);
     }
     this.ledger.assertWithinBudget();
+    // Everything agy will be given, not a similar-looking subset. `dirsFor`
+    // derives workspace roots with dirname(), so validating only the caller's
+    // own paths let a file argument equal to an allowed root contribute that
+    // root's PARENT as a workspace directory — one level outside containment,
+    // once per call.
     assertWithinRoots(
-      [req.cwd, ...(req.dirs ?? []), ...req.tool.touchedPaths(req.args, req.cwd)],
+      [req.cwd, ...this.dirsFor(req), ...req.tool.touchedPaths(req.args, req.cwd)],
       this.cfg.allowedRoots,
     );
   }
@@ -253,6 +267,9 @@ export class Delegator {
    * Every workspace root this call needs: what the caller asked for, plus the
    * directories the tool's own arguments imply — a file outside `cwd` is not in
    * agy's workspace unless its directory is added too.
+   *
+   * Whatever this returns is containment-checked by `assertMayDelegate`, so a
+   * derived root can never widen the caller's reach.
    */
   private dirsFor(req: DelegationRequest): string[] {
     return [...new Set([...(req.dirs ?? []), ...req.tool.extraDirs(req.args, req.cwd)])];
@@ -266,7 +283,29 @@ export class Delegator {
       throw new ModelNotChosenError(await this.defaultChoice(), await this.models.available());
     }
     const route = await this.routeFor(req, pref);
-    return this.admission.run(req.conversationId, () => this.attempt(req, prompt, route));
+    // agy cannot be *made* to honour plan mode while permissions are skipped, so
+    // the bridge watches instead of promising. Only plan-mode runs are watched:
+    // a write run changing the tree is the point of it. Both fingerprints are
+    // taken inside the admission gate, so this filesystem work is bounded by
+    // AGY_MAX_CONCURRENCY like everything else and cannot stampede a big tree.
+    const watch = modeFor(req.tool, req.write) === "plan";
+    return this.admission.run(
+      req.conversationId,
+      async () => {
+        // COR-M4. Re-check the budget here, inside the gate, not only before
+        // queueing: `runMany` fans every leg out at once, so all of them used to
+        // pass the pre-flight check while spend was still zero and overshoot was
+        // bounded by leg count rather than by the limit.
+        this.ledger.assertWithinBudget();
+        const snap = this.deps.snapshot ?? snapshotTree;
+        const before = watch ? await snap(req.cwd) : undefined;
+        const result = await this.attemptWithSkewRetry(req, prompt, route);
+        if (!before) return result;
+        const wrote = treeChanged(before, await snap(req.cwd));
+        return wrote === undefined ? result : { ...result, wroteInReadOnlyMode: wrote };
+      },
+      req.signal,
+    );
   }
 
   /**
@@ -311,11 +350,32 @@ export class Delegator {
     return { candidates, ...(resolution.note ? { note: resolution.note } : {}) };
   }
 
-  private finish(
-    partial: Omit<Delegation, "redactions" | "output"> & { output: string },
-  ): Delegation {
+  /**
+   * The single exit through which every answer leaves this bridge.
+   *
+   * Order matters and is the reason both steps live here rather than in the
+   * runner: redaction runs on the whole answer first, then truncation cuts it.
+   * The other way round, a secret that straddled the cut point was split into
+   * two halves that no longer matched any credential shape, and survived.
+   * Routing both through one funnel also means the warm-session paths, which
+   * never touch the runner, are scrubbed and capped exactly like a cold run.
+   */
+  private finish(partial: Omit<Delegation, "redactions" | "truncatedFrom">): Delegation {
     const scrubbed = this.cfg.redact ? redact(partial.output) : { text: partial.output, count: 0 };
-    return { ...partial, output: scrubbed.text, redactions: scrubbed.count };
+    // SEC-M2. structuredContent is model output the caller *parses*, so leaving
+    // it unscrubbed defeated the setting entirely for any schema-constrained call.
+    const structured =
+      this.cfg.redact && partial.structuredOutput !== undefined
+        ? redactDeep(partial.structuredOutput)
+        : undefined;
+    const cut = truncate(scrubbed.text, this.cfg.maxOutputChars);
+    return {
+      ...partial,
+      ...(structured ? { structuredOutput: structured.value } : {}),
+      output: cut.text,
+      ...(cut.from !== undefined ? { truncatedFrom: cut.from } : {}),
+      redactions: scrubbed.count + (structured?.count ?? 0),
+    };
   }
 
   /**
@@ -331,6 +391,29 @@ export class Delegator {
       !req.effort &&
       modeFor(req.tool, req.write) === "plan"
     );
+  }
+
+  /**
+   * Runs the route, and re-reads `agy models` once if agy rejects every name in it.
+   *
+   * An unknown model does not fail over, by design — it is a caller error, not a
+   * quota problem. But it is also exactly what an agy upgrade under a running
+   * bridge looks like, because the listing is cached for the process lifetime.
+   * Without this the server stayed bricked until it was restarted.
+   */
+  private async attemptWithSkewRetry(
+    req: DelegationRequest,
+    prompt: string,
+    route: Route,
+  ): Promise<Delegation> {
+    try {
+      return await this.attempt(req, prompt, route);
+    } catch (err) {
+      if (!(err instanceof AgyFailure) || err.kind !== "invalid_model") throw err;
+      this.models.invalidate();
+      const fresh = await this.routeFor(req, this.prefs.load());
+      return this.attempt(req, prompt, fresh);
+    }
   }
 
   private async attempt(req: DelegationRequest, prompt: string, route: Route): Promise<Delegation> {
@@ -401,6 +484,11 @@ export class Delegator {
           continue;
         }
         if (err instanceof AgyFailure && err.policy.failover && model) {
+          // `failover` is granted to quota alone, and a quota reached this branch
+          // rather than the one above because it was classified from stderr or the
+          // envelope instead of the log. It is still an exhausted model: record the
+          // cooldown, or every later call re-burns it before failing over again.
+          if (err.kind === "quota") this.cooldowns.set(model, undefined);
           attempts.push(`${model}: ${err.message}`);
           continue;
         }
@@ -465,7 +553,11 @@ export class Delegator {
       ...(model ? { model } : {}),
       attempts,
       ...(note ? { note } : {}),
-      sessionId: result.conversationId ?? (await sessionFor(req.cwd, this.deps.readSessions)),
+      // No fallback to agy's global last-conversation cache: that file is keyed by
+      // directory across the whole machine, so it hands back the user's own
+      // interactive session, which follow_up would then read and append to.
+      // A run that reports no conversation id simply has no resumable session.
+      ...(result.conversationId ? { sessionId: result.conversationId } : {}),
       timedOut: result.timedOut,
       deniedActions: result.deniedActions,
       usage: result.usage,
@@ -473,7 +565,6 @@ export class Delegator {
         ? { structuredOutput: result.structuredOutput }
         : {}),
       numTurns: result.numTurns,
-      ...(result.truncatedFrom !== undefined ? { truncatedFrom: result.truncatedFrom } : {}),
       warm: false,
     });
   }

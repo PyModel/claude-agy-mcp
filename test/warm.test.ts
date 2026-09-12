@@ -4,6 +4,7 @@ import {
   turnMessage,
   WarmSessions,
   WarmTimeout,
+  WarmTurnUncertain,
   WarmUnavailable,
   type SessionProcess,
 } from "../src/warm.js";
@@ -207,7 +208,10 @@ describe("WarmSessions", () => {
     s.answer("ok");
     await p;
     warm.shutdown();
-    expect(s.kills).toEqual(["SIGTERM"]);
+    // SIGKILL immediately, not on a deferred timer: on the way out there is no
+    // later, and these children are detached with permissions skipped, so one
+    // that ignores SIGTERM would outlive the bridge for good.
+    expect(s.kills).toEqual(["SIGTERM", "SIGKILL"]);
     expect(warm.stats().resident).toBe(0);
   });
 
@@ -282,5 +286,22 @@ describe("WarmSessions", () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(warm.stats().resident).toBe(0);
     expect(s.kills).toContain("SIGTERM");
+  });
+});
+
+describe("ambiguous turn outcomes (COR-M8)", () => {
+  it("reports uncertainty instead of a safe-to-retry failure once the turn was sent", async () => {
+    // A dropped session used to reject with WarmUnavailable in both cases, and
+    // the caller acts on that by re-sending the prompt. Re-sending a turn agy
+    // may already have processed applies a write follow-up twice.
+    const f = fakeSession();
+    const pool = new WarmSessions(cfg, fullCaps, { spawnSession: f.spawnSession });
+    const turn = pool.turn("conv-1", "/repo", "do the thing", TURN);
+    await Promise.resolve();
+    expect(f.written).toHaveLength(1);
+    pool.shutdown();
+    await expect(turn).rejects.toBeInstanceOf(WarmTurnUncertain);
+    // Still exactly one send: nothing replayed it.
+    expect(f.written).toHaveLength(1);
   });
 });

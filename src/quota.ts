@@ -9,8 +9,25 @@
 
 export const DEFAULT_COOLDOWN_SEC = 15 * 60;
 
-const QUOTA_RE = /RESOURCE_EXHAUSTED \(code 429\)/;
-const RESET_RE = /Resets in ((?:\d+h)?(?:\d+m)?(?:\d+s)?)\b/;
+/**
+ * The one place a 429 is recognised.
+ *
+ * It is deliberately broader than the exact string agy 1.2.x emits
+ * ("RESOURCE_EXHAUSTED (code 429)"). The log poller is the *only* way this
+ * bridge learns about quota exhaustion, so a wording change upstream must not
+ * silently switch cooldowns off. `failure.ts` classifies stderr with this same
+ * pattern rather than a second, differently-worded copy of it.
+ */
+export const QUOTA_RE =
+  /RESOURCE_EXHAUSTED|\bcode 429\b|\b429\b|quota (?:exceeded|reached|exhausted)/i;
+
+/**
+ * Requires at least one component, so an unparseable duration reports itself as
+ * unknown instead of matching the empty string and being read as "no reset".
+ * Days are included: agy emits multi-day resets ("Resets in 1d2h30m") and the
+ * h/m/s-only form silently downgraded those to the 15-minute default.
+ */
+const RESET_RE = /Resets in ((?:\d+d)?(?:\d+h)?(?:\d+m)?(?:\d+s)?)/;
 
 export interface QuotaInfo {
   resetText?: string;
@@ -18,9 +35,14 @@ export interface QuotaInfo {
 }
 
 export function parseResetDuration(text: string): number | undefined {
-  const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(text);
-  if (!m || (!m[1] && !m[2] && !m[3])) return undefined;
-  return Number(m[1] ?? 0) * 3600 + Number(m[2] ?? 0) * 60 + Number(m[3] ?? 0);
+  const m = /^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(text.trim());
+  if (!m || !m.slice(1).some(Boolean)) return undefined;
+  return (
+    Number(m[1] ?? 0) * 86_400 +
+    Number(m[2] ?? 0) * 3600 +
+    Number(m[3] ?? 0) * 60 +
+    Number(m[4] ?? 0)
+  );
 }
 
 export function formatDuration(totalSeconds: number): string {
